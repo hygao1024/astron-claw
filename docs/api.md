@@ -1,0 +1,1120 @@
+# Astron Claw Bridge Server API 文档
+
+## 概述
+
+Astron Claw 是一个 AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端和 Chat 端分别通过 WebSocket 连接到服务器，服务器根据 Token 将双方配对并双向转发消息。
+
+```
+Chat Client ──WebSocket──► Bridge Server ◄──WebSocket── Bot Plugin
+              /bridge/chat   (Token 配对)     /bridge/bot
+```
+
+- 每个 Token 对应 **1 个 Bot** 连接和 **N 个 Chat** 连接
+- Bot 端无需公网 IP，主动向服务器发起出站 WebSocket 连接
+- Chat 端通过相同 Token 连接后即可与 Bot 实时对话
+
+### Base URL
+
+```
+http://129.211.5.25:8765
+```
+
+### 认证方式
+
+| 接口类别 | 认证方式 |
+|---------|---------|
+| Token 接口 (`/api/token/*`) | 无需认证 |
+| Admin 接口 (`/api/admin/*`) | Cookie `admin_session`（登录后自动携带） |
+| WebSocket (`/bridge/*`) | Query 参数 `token` 或请求头 `X-Astron-Bot-Token` |
+
+---
+
+## 目录
+
+- [1. Token 接口](#1-token-接口)
+  - [1.1 创建 Token](#11-创建-token)
+  - [1.2 验证 Token](#12-验证-token)
+- [2. Admin 认证接口](#2-admin-认证接口)
+  - [2.1 查询认证状态](#21-查询认证状态)
+  - [2.2 首次设置密码](#22-首次设置密码)
+  - [2.3 管理员登录](#23-管理员登录)
+  - [2.4 管理员登出](#24-管理员登出)
+- [3. Admin Token 管理接口](#3-admin-token-管理接口)
+  - [3.1 获取 Token 列表](#31-获取-token-列表)
+  - [3.2 创建 Token（管理端）](#32-创建-token管理端)
+  - [3.3 删除 Token](#33-删除-token)
+  - [3.4 清理过期 Token](#34-清理过期-token)
+- [4. WebSocket — Chat 客户端](#4-websocket--chat-客户端)
+  - [4.1 连接](#41-连接)
+  - [4.2 客户端发送消息](#42-客户端发送消息)
+  - [4.3 服务端推送消息](#43-服务端推送消息)
+  - [4.4 交互时序](#44-交互时序)
+  - [4.5 接入示例](#45-接入示例)
+- [5. WebSocket — Bot 插件](#5-websocket--bot-插件)
+  - [5.1 连接](#51-连接)
+  - [5.2 接收用户请求](#52-接收用户请求)
+  - [5.3 发送流式更新](#53-发送流式更新)
+  - [5.4 发送回复完成](#54-发送回复完成)
+  - [5.5 接入示例](#55-接入示例)
+
+---
+
+## 1. Token 接口
+
+### 1.1 创建 Token
+
+创建一个 `sk-` 前缀的随机 Token，有效期 24 小时。
+
+```
+POST /api/token
+```
+
+**请求参数：** 无
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `token` | string | 生成的 Token |
+
+**响应示例：**
+
+```json
+{
+  "token": "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
+}
+```
+
+**测试代码：**
+
+```bash
+curl -X POST http://129.211.5.25:8765/api/token
+```
+
+```python
+import requests
+
+resp = requests.post("http://129.211.5.25:8765/api/token")
+print(resp.json())
+# {'token': 'sk-a1b2c3d4e5f6...'}
+```
+
+---
+
+### 1.2 验证 Token
+
+校验 Token 是否有效，并返回对应 Bot 是否在线。
+
+```
+POST /api/token/validate
+```
+
+**请求体：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `token` | string | 是 | 待验证的 Token |
+
+**请求示例：**
+
+```json
+{
+  "token": "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
+}
+```
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `valid` | boolean | Token 是否有效 |
+| `bot_connected` | boolean | 对应的 Bot 是否在线（Token 无效时固定 `false`） |
+
+**响应示例：**
+
+```json
+// Token 有效，Bot 在线
+{"valid": true, "bot_connected": true}
+
+// Token 有效，Bot 离线
+{"valid": true, "bot_connected": false}
+
+// Token 无效
+{"valid": false, "bot_connected": false}
+```
+
+**测试代码：**
+
+```bash
+curl -X POST http://129.211.5.25:8765/api/token/validate \
+  -H "Content-Type: application/json" \
+  -d '{"token": "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"}'
+```
+
+```python
+import requests
+
+resp = requests.post("http://129.211.5.25:8765/api/token/validate", json={
+    "token": "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
+})
+data = resp.json()
+print(f"Valid: {data['valid']}, Bot online: {data['bot_connected']}")
+```
+
+---
+
+## 2. Admin 认证接口
+
+### 2.1 查询认证状态
+
+返回当前 Admin 的认证状态，前端据此决定显示哪个界面。
+
+```
+GET /api/admin/auth/status
+```
+
+**请求参数：** 无（自动携带 Cookie）
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `need_setup` | boolean | 是否需要首次设置密码 |
+| `authenticated` | boolean | 当前 Session 是否已认证 |
+
+**状态判断逻辑：**
+
+| `need_setup` | `authenticated` | 含义 |
+|:---:|:---:|------|
+| `true` | `false` | 首次使用，需设置密码 |
+| `false` | `true` | 已登录 |
+| `false` | `false` | 已设置密码，但未登录 |
+
+**响应示例：**
+
+```json
+{"need_setup": false, "authenticated": true}
+```
+
+**测试代码：**
+
+```bash
+curl http://129.211.5.25:8765/api/admin/auth/status
+```
+
+```python
+import requests
+
+resp = requests.get("http://129.211.5.25:8765/api/admin/auth/status")
+print(resp.json())
+# {'need_setup': False, 'authenticated': False}
+```
+
+---
+
+### 2.2 首次设置密码
+
+仅在密码未设置时可用。设置成功后自动创建 Session 并通过 `Set-Cookie` 返回。
+
+```
+POST /api/admin/auth/setup
+```
+
+**请求体：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `password` | string | 是 | 管理员密码（至少 4 个字符） |
+
+**请求示例：**
+
+```json
+{"password": "your_password"}
+```
+
+**响应：**
+
+| 状态码 | 说明 |
+|--------|------|
+| `200` | 设置成功，响应头包含 `Set-Cookie: admin_session=xxx` |
+| `400` | 密码已设置（`Password already set`）或密码过短（`Password too short`） |
+
+**成功响应：**
+
+```json
+{"ok": true}
+```
+
+**失败响应：**
+
+```json
+{"error": "Password already set"}
+```
+
+**测试代码：**
+
+```bash
+curl -X POST http://129.211.5.25:8765/api/admin/auth/setup \
+  -H "Content-Type: application/json" \
+  -d '{"password": "your_password"}' \
+  -c cookies.txt
+```
+
+```python
+import requests
+
+session = requests.Session()
+resp = session.post("http://129.211.5.25:8765/api/admin/auth/setup", json={
+    "password": "your_password"
+})
+print(resp.json())
+# session 对象自动保存 cookie，后续请求自动携带
+```
+
+---
+
+### 2.3 管理员登录
+
+验证密码，成功后通过 `Set-Cookie` 返回 Session（有效期 24 小时）。
+
+```
+POST /api/admin/auth/login
+```
+
+**请求体：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `password` | string | 是 | 管理员密码 |
+
+**请求示例：**
+
+```json
+{"password": "your_password"}
+```
+
+**响应：**
+
+| 状态码 | 说明 |
+|--------|------|
+| `200` | 登录成功，响应头包含 `Set-Cookie: admin_session=xxx` |
+| `401` | 密码错误 |
+
+**成功响应：**
+
+```json
+{"ok": true}
+```
+
+**失败响应：**
+
+```json
+{"error": "Wrong password"}
+```
+
+**测试代码：**
+
+```bash
+# 登录并保存 cookie
+curl -X POST http://129.211.5.25:8765/api/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"password": "your_password"}' \
+  -c cookies.txt
+
+# 后续请求携带 cookie
+curl http://129.211.5.25:8765/api/admin/tokens -b cookies.txt
+```
+
+```python
+import requests
+
+session = requests.Session()
+
+# 登录
+resp = session.post("http://129.211.5.25:8765/api/admin/auth/login", json={
+    "password": "your_password"
+})
+print(resp.json())  # {'ok': True}
+
+# 后续请求自动携带 cookie
+resp = session.get("http://129.211.5.25:8765/api/admin/tokens")
+print(resp.json())  # {'tokens': [...]}
+```
+
+---
+
+### 2.4 管理员登出
+
+清除服务端 Session 并删除客户端 Cookie。
+
+```
+POST /api/admin/auth/logout
+```
+
+**请求参数：** 无（自动携带 Cookie）
+
+**响应：**
+
+```json
+{"ok": true}
+```
+
+**测试代码：**
+
+```bash
+curl -X POST http://129.211.5.25:8765/api/admin/auth/logout -b cookies.txt
+```
+
+```python
+resp = session.post("http://129.211.5.25:8765/api/admin/auth/logout")
+print(resp.json())  # {'ok': True}
+```
+
+---
+
+## 3. Admin Token 管理接口
+
+> 以下接口均需要登录后携带 `admin_session` Cookie，未认证返回 `401`。
+
+### 3.1 获取 Token 列表
+
+返回所有未过期的 Token 及其连接状态。
+
+```
+GET /api/admin/tokens
+```
+
+**请求参数：** 无
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `tokens` | array | Token 列表 |
+
+**Token 对象结构：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `token` | string | Token 值（`sk-` 前缀） |
+| `created_at` | number | 创建时间（Unix 时间戳，秒） |
+| `expires_at` | number | 过期时间（Unix 时间戳，秒） |
+| `bot_online` | boolean | Bot 是否在线 |
+| `chat_count` | integer | 当前 Chat 连接数 |
+
+**响应示例：**
+
+```json
+{
+  "tokens": [
+    {
+      "token": "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+      "created_at": 1709280000.0,
+      "expires_at": 1709366400.0,
+      "bot_online": true,
+      "chat_count": 2
+    }
+  ]
+}
+```
+
+**测试代码：**
+
+```bash
+curl http://129.211.5.25:8765/api/admin/tokens -b cookies.txt
+```
+
+```python
+resp = session.get("http://129.211.5.25:8765/api/admin/tokens")
+for t in resp.json()["tokens"]:
+    status = "online" if t["bot_online"] else "offline"
+    print(f"{t['token'][:10]}... | Bot: {status} | Chats: {t['chat_count']}")
+```
+
+---
+
+### 3.2 创建 Token（管理端）
+
+生成新的 `sk-` 前缀 Token。
+
+```
+POST /api/admin/tokens
+```
+
+**请求参数：** 无
+
+**响应：**
+
+```json
+{"token": "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"}
+```
+
+**测试代码：**
+
+```bash
+curl -X POST http://129.211.5.25:8765/api/admin/tokens -b cookies.txt
+```
+
+```python
+resp = session.post("http://129.211.5.25:8765/api/admin/tokens")
+print(f"New token: {resp.json()['token']}")
+```
+
+---
+
+### 3.3 删除 Token
+
+立即删除指定 Token。
+
+```
+DELETE /api/admin/tokens/{token_value}
+```
+
+**路径参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `token_value` | string | 要删除的 Token 值 |
+
+**响应：**
+
+```json
+{"ok": true}
+```
+
+**测试代码：**
+
+```bash
+curl -X DELETE http://129.211.5.25:8765/api/admin/tokens/sk-a1b2c3d4e5f6... -b cookies.txt
+```
+
+```python
+token = "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
+resp = session.delete(f"http://129.211.5.25:8765/api/admin/tokens/{token}")
+print(resp.json())  # {'ok': True}
+```
+
+---
+
+### 3.4 清理过期 Token
+
+批量删除所有已过期的 Token，返回删除数量。
+
+```
+POST /api/admin/cleanup
+```
+
+**请求参数：** 无
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `removed` | integer | 已删除的过期 Token 数量 |
+
+**响应示例：**
+
+```json
+{"removed": 3}
+```
+
+**测试代码：**
+
+```bash
+curl -X POST http://129.211.5.25:8765/api/admin/cleanup -b cookies.txt
+```
+
+```python
+resp = session.post("http://129.211.5.25:8765/api/admin/cleanup")
+print(f"Removed {resp.json()['removed']} expired tokens")
+```
+
+---
+
+## 4. WebSocket — Chat 客户端
+
+Chat 端通过 WebSocket 与 Bot 进行实时对话。服务器根据 Token 将 Chat 与 Bot 配对并双向转发消息。
+
+### 4.1 连接
+
+```
+ws://{host}:{port}/bridge/chat?token={token}
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `token` | string | 是 | 由 Admin 生成的 `sk-` 前缀 Token |
+
+**连接结果：**
+
+| 场景 | 行为 |
+|------|------|
+| Token 有效 | 连接保持，服务端立即推送一条 `bot_status` 消息 |
+| Token 无效/过期 | 服务端关闭连接，close code `4001`，reason `"Invalid or missing token"` |
+
+---
+
+### 4.2 客户端发送消息
+
+客户端通过 WebSocket 发送 JSON 文本帧。
+
+**消息结构：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | string | 是 | 固定为 `"message"` |
+| `content` | string | 是 | 用户消息文本，不能为空 |
+
+**示例：**
+
+```json
+{"type": "message", "content": "你好，请帮我写一段代码"}
+```
+
+---
+
+### 4.3 服务端推送消息
+
+服务端通过 WebSocket 向客户端推送以下类型的 JSON 消息：
+
+#### `bot_status` — Bot 在线状态
+
+连接成功后立即推送一次，Bot 上下线时也会推送。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"bot_status"` |
+| `connected` | boolean | Bot 是否在线 |
+
+```json
+{"type": "bot_status", "connected": true}
+```
+
+#### `chunk` — Bot 回复文本片段（流式）
+
+Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"chunk"` |
+| `content` | string | 文本片段 |
+
+```json
+{"type": "chunk", "content": "这是一段回复"}
+```
+
+#### `thinking` — Bot 思考过程（流式）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"thinking"` |
+| `content` | string | 思考内容片段 |
+
+```json
+{"type": "thinking", "content": "让我分析一下这个问题..."}
+```
+
+#### `tool_call` — Bot 调用工具
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"tool_call"` |
+| `name` | string | 工具名称 |
+| `input` | string | 工具输入 |
+
+```json
+{"type": "tool_call", "name": "Read file", "input": "src/main.py"}
+```
+
+#### `tool_result` — 工具执行结果
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"tool_result"` |
+| `content` | string | 执行结果 |
+
+```json
+{"type": "tool_result", "content": "import os\nimport sys..."}
+```
+
+#### `done` — 本轮回复结束
+
+收到此消息表示 Bot 对当前提问的回复已完成。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"done"` |
+
+```json
+{"type": "done"}
+```
+
+#### `error` — 错误
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"error"` |
+| `content` | string | 错误描述 |
+
+```json
+{"type": "error", "content": "No bot connected"}
+```
+
+**可能的错误值：**
+
+| content | 说明 |
+|---------|------|
+| `Empty message` | 发送了空消息 |
+| `No bot connected` | 当前 Token 没有 Bot 在线 |
+| `Failed to send to bot` | 发送到 Bot 失败 |
+
+---
+
+### 4.4 交互时序
+
+```
+Client                          Server                          Bot
+  │                               │                              │
+  ├── WS connect ────────────────►│                              │
+  │◄── bot_status ────────────────┤                              │
+  │                               │                              │
+  ├── {"type":"message"} ────────►│── JSON-RPC request ─────────►│
+  │                               │                              │
+  │◄── {"type":"thinking"} ───────┤◄── session/update ───────────┤
+  │◄── {"type":"thinking"} ───────┤◄── session/update ───────────┤
+  │◄── {"type":"tool_call"} ──────┤◄── session/update ───────────┤
+  │◄── {"type":"tool_result"} ────┤◄── session/update ───────────┤
+  │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
+  │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
+  │◄── {"type":"done"} ───────────┤◄── JSON-RPC response ────────┤
+  │                               │                              │
+```
+
+---
+
+### 4.5 接入示例
+
+#### JavaScript
+
+```javascript
+const ws = new WebSocket('ws://129.211.5.25:8765/bridge/chat?token=sk-xxx');
+
+let botOnline = false;
+let assistantText = '';
+let thinkingText = '';
+
+ws.onopen = () => console.log('Connected');
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  switch (msg.type) {
+    case 'bot_status':
+      botOnline = msg.connected;
+      console.log('Bot online:', botOnline);
+      break;
+
+    case 'thinking':
+      thinkingText += msg.content;
+      // 可选：展示思考过程
+      break;
+
+    case 'chunk':
+      assistantText += msg.content;
+      process.stdout.write(msg.content);  // 流式输出
+      break;
+
+    case 'tool_call':
+      console.log(`\n[Tool: ${msg.name}] ${msg.input}`);
+      break;
+
+    case 'tool_result':
+      console.log(`[Result] ${msg.content.slice(0, 100)}...`);
+      break;
+
+    case 'done':
+      console.log('\n--- Reply complete ---');
+      console.log('Full reply:', assistantText);
+      assistantText = '';
+      thinkingText = '';
+      break;
+
+    case 'error':
+      console.error('Error:', msg.content);
+      break;
+  }
+};
+
+ws.onclose = (e) => console.log('Disconnected:', e.code, e.reason);
+
+// 发送消息（需等 ws.onopen 触发后）
+function send(text) {
+  ws.send(JSON.stringify({ type: 'message', content: text }));
+}
+
+// 示例：连接成功后发送
+ws.onopen = () => {
+  console.log('Connected, waiting for bot_status...');
+};
+```
+
+#### Python
+
+```python
+import asyncio
+import json
+import websockets
+
+
+async def chat(token: str, message: str):
+    uri = f"ws://129.211.5.25:8765/bridge/chat?token={token}"
+
+    async with websockets.connect(uri) as ws:
+        # 1. 等待 bot_status
+        raw = await ws.recv()
+        status = json.loads(raw)
+        print(f"Bot online: {status['connected']}")
+
+        if not status["connected"]:
+            print("Bot is offline, cannot send message")
+            return
+
+        # 2. 发送消息
+        await ws.send(json.dumps({"type": "message", "content": message}))
+        print(f"Sent: {message}")
+
+        # 3. 接收流式回复
+        reply_text = ""
+        thinking_text = ""
+
+        async for raw in ws:
+            msg = json.loads(raw)
+            msg_type = msg["type"]
+
+            if msg_type == "thinking":
+                thinking_text += msg["content"]
+
+            elif msg_type == "chunk":
+                reply_text += msg["content"]
+                print(msg["content"], end="", flush=True)
+
+            elif msg_type == "tool_call":
+                print(f"\n[Tool: {msg['name']}] {msg['input']}")
+
+            elif msg_type == "tool_result":
+                print(f"[Result] {msg['content'][:100]}...")
+
+            elif msg_type == "done":
+                print("\n--- Reply complete ---")
+                break
+
+            elif msg_type == "error":
+                print(f"\nError: {msg['content']}")
+                break
+
+            elif msg_type == "bot_status":
+                if not msg["connected"]:
+                    print("\nBot went offline")
+                    break
+
+        return reply_text
+
+
+# 运行
+token = "sk-your-token-here"
+asyncio.run(chat(token, "你好，介绍一下你自己"))
+```
+
+#### Python（多轮对话）
+
+```python
+import asyncio
+import json
+import websockets
+
+
+async def multi_turn_chat(token: str):
+    uri = f"ws://129.211.5.25:8765/bridge/chat?token={token}"
+
+    async with websockets.connect(uri) as ws:
+        # 等待 bot_status
+        status = json.loads(await ws.recv())
+        print(f"Bot online: {status['connected']}\n")
+
+        while True:
+            # 用户输入
+            user_input = input("You: ").strip()
+            if not user_input or user_input.lower() in ("exit", "quit"):
+                break
+
+            # 发送
+            await ws.send(json.dumps({
+                "type": "message",
+                "content": user_input
+            }))
+
+            # 接收回复
+            print("Bot: ", end="", flush=True)
+            async for raw in ws:
+                msg = json.loads(raw)
+
+                if msg["type"] == "chunk":
+                    print(msg["content"], end="", flush=True)
+                elif msg["type"] == "done":
+                    print("\n")
+                    break
+                elif msg["type"] == "error":
+                    print(f"\n[Error] {msg['content']}\n")
+                    break
+                elif msg["type"] == "bot_status" and not msg["connected"]:
+                    print("\n[Bot disconnected]")
+                    return
+
+
+asyncio.run(multi_turn_chat("sk-your-token-here"))
+```
+
+#### curl + websocat
+
+```bash
+# 安装 websocat: https://github.com/nickel-org/websocat
+# 连接并交互
+echo '{"type":"message","content":"你好"}' | \
+  websocat 'ws://129.211.5.25:8765/bridge/chat?token=sk-xxx'
+```
+
+---
+
+## 5. WebSocket — Bot 插件
+
+Bot 端通过此 WebSocket 接收来自 Chat 客户端的请求，处理后返回流式结果。
+
+### 5.1 连接
+
+```
+ws://{host}:{port}/bridge/bot?token={token}
+```
+
+Token 支持两种传递方式（二选一）：
+
+| 方式 | 示例 |
+|------|------|
+| Query 参数 | `ws://host:8765/bridge/bot?token=sk-xxx` |
+| 请求头 | `X-Astron-Bot-Token: sk-xxx` |
+
+**关闭码：**
+
+| Code | 含义 |
+|------|------|
+| `4001` | Token 无效或已过期 |
+| `4002` | 该 Token 已有另一个 Bot 在线（每个 Token 只允许 1 个 Bot） |
+
+---
+
+### 5.2 接收用户请求
+
+服务端将 Chat 消息封装为 JSON-RPC 2.0 格式发送给 Bot：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `jsonrpc` | string | 固定 `"2.0"` |
+| `id` | string | 请求唯一标识（`req_` 前缀），回复时需原样返回 |
+| `method` | string | 固定 `"session/prompt"` |
+| `params.sessionId` | string | 会话 ID，同一 Token 多次对话共享 |
+| `params.prompt.content` | array | 消息内容，`[{"type": "text", "text": "..."}]` |
+
+**示例：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req_a1b2c3d4e5f6",
+  "method": "session/prompt",
+  "params": {
+    "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": {
+      "content": [
+        {"type": "text", "text": "你好，请帮我写一段代码"}
+      ]
+    }
+  }
+}
+```
+
+---
+
+### 5.3 发送流式更新
+
+Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
+
+**基本结构：**
+
+```json
+{
+  "method": "session/update",
+  "params": {
+    "update": {
+      "sessionUpdate": "<update_type>",
+      "content": {"type": "text", "text": "..."}
+    }
+  }
+}
+```
+
+**sessionUpdate 类型：**
+
+| 类型 | 说明 | Chat 端接收为 |
+|------|------|-------------|
+| `agent_message_chunk` | Bot 回复文本片段 | `chunk` |
+| `agent_thought_chunk` | Bot 思考过程片段 | `thinking` |
+| `tool_call` | 工具调用 | `tool_call` |
+| `tool_call_update` | 工具调用结果 | `tool_result` |
+
+**回复文本片段示例：**
+
+```json
+{
+  "method": "session/update",
+  "params": {
+    "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {"type": "text", "text": "这是一段回复"}
+    }
+  }
+}
+```
+
+**思考过程示例：**
+
+```json
+{
+  "method": "session/update",
+  "params": {
+    "update": {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {"type": "text", "text": "让我分析一下..."}
+    }
+  }
+}
+```
+
+**工具调用示例：**
+
+```json
+{
+  "method": "session/update",
+  "params": {
+    "update": {
+      "sessionUpdate": "tool_call",
+      "title": "Read file",
+      "content": [
+        {"content": {"type": "text", "text": "src/main.py"}}
+      ]
+    }
+  }
+}
+```
+
+---
+
+### 5.4 发送回复完成
+
+回复结束时发送 JSON-RPC Response（携带 `id`）：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req_a1b2c3d4e5f6",
+  "result": {
+    "stopReason": "end_turn"
+  }
+}
+```
+
+> `id` 必须与收到的请求 `id` 一致。
+
+---
+
+### 5.5 接入示例
+
+#### Python（最小 Bot 实现）
+
+```python
+import asyncio
+import json
+import websockets
+
+
+async def bot(token: str):
+    uri = f"ws://129.211.5.25:8765/bridge/bot?token={token}"
+
+    async with websockets.connect(uri) as ws:
+        print("Bot connected, waiting for messages...")
+
+        async for raw in ws:
+            msg = json.loads(raw)
+
+            # 只处理 session/prompt 请求
+            if msg.get("method") != "session/prompt":
+                continue
+
+            request_id = msg["id"]
+            user_text = msg["params"]["prompt"]["content"][0]["text"]
+            print(f"User: {user_text}")
+
+            # 发送思考过程（可选）
+            await ws.send(json.dumps({
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_thought_chunk",
+                        "content": {"type": "text", "text": "正在思考..."}
+                    }
+                }
+            }))
+
+            # 流式发送回复（分多个 chunk）
+            reply = f"你好！你说的是：{user_text}"
+            for char in reply:
+                await ws.send(json.dumps({
+                    "method": "session/update",
+                    "params": {
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": char}
+                        }
+                    }
+                }))
+                await asyncio.sleep(0.05)  # 模拟流式延迟
+
+            # 发送完成
+            await ws.send(json.dumps({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"stopReason": "end_turn"}
+            }))
+            print(f"Bot: {reply}")
+
+
+asyncio.run(bot("sk-your-token-here"))
+```
+
+---
+
+## 错误码汇总
+
+### HTTP 状态码
+
+| 状态码 | 说明 |
+|--------|------|
+| `200` | 请求成功 |
+| `400` | 请求参数错误 |
+| `401` | 未认证或密码错误 |
+| `404` | 路径不存在 |
+
+### WebSocket 关闭码
+
+| 关闭码 | 说明 |
+|--------|------|
+| `4001` | Token 无效或已过期 |
+| `4002` | 该 Token 已有 Bot 在线（仅 `/bridge/bot`） |
