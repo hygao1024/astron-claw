@@ -1,0 +1,60 @@
+{
+  "id": "astron-claw",
+  "name": "astron-claw",
+  "description": "Connector plugin that bridges the Astron server with the local OpenClaw Gateway.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "bridge": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "gateway": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "number"
+          },
+          "clientId": {
+            "type": "string"
+          },
+          "clientMode": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          }
+        }
+      },
+      "retry": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "baseMs": {
+            "type": "number"
+          },
+          "maxMs": {
+            "type": "number"
+          },
+          "maxAttempts": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  }
+}

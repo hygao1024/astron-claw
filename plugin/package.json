@@ -1,0 +1,19 @@
+{
+  "name": "astron-claw",
+  "version": "0.1.0",
+  "description": "OpenClaw connector that bridges the Astron server with the local OpenClaw Gateway.",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist/",
+    "openclaw.plugin.json"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
