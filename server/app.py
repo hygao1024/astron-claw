@@ -48,7 +48,7 @@ async def serve_index():
 # ── Bot WebSocket ─────────────────────────────────────────────────────────────
 
 
-@app.websocket("/ws/bot")
+@app.websocket("/bridge/bot")
 async def ws_bot(
     ws: WebSocket,
     token: str = Query(default=""),
@@ -85,7 +85,7 @@ async def ws_bot(
 # ── Chat WebSocket ────────────────────────────────────────────────────────────
 
 
-@app.websocket("/ws/chat")
+@app.websocket("/bridge/chat")
 async def ws_chat(
     ws: WebSocket,
     token: str = Query(default=""),

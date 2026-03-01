@@ -55,30 +55,30 @@ async def main():
     # ── 2. Test WebSocket auth rejection ──
     print("\n2. WebSocket Auth")
     try:
-        async with websockets.connect(f"{WS_SERVER}/ws/chat?token=sk-bad") as ws_test:
+        async with websockets.connect(f"{WS_SERVER}/bridge/chat?token=sk-bad") as ws_test:
             # Server should accept then immediately close with 4001
             try:
                 msg = await asyncio.wait_for(ws_test.recv(), timeout=3)
-                report("WS /ws/chat bad token rejects", False, f"got message: {msg[:60]}")
+                report("WS /bridge/chat bad token rejects", False, f"got message: {msg[:60]}")
             except websockets.exceptions.ConnectionClosed as e:
-                report("WS /ws/chat bad token rejects", e.code == 4001, f"code={e.code}")
+                report("WS /bridge/chat bad token rejects", e.code == 4001, f"code={e.code}")
     except Exception as e:
-        report("WS /ws/chat bad token rejects", "4001" in str(e) or "403" in str(e), str(e)[:60])
+        report("WS /bridge/chat bad token rejects", "4001" in str(e) or "403" in str(e), str(e)[:60])
 
     try:
-        async with websockets.connect(f"{WS_SERVER}/ws/bot?token=sk-bad") as ws_test:
+        async with websockets.connect(f"{WS_SERVER}/bridge/bot?token=sk-bad") as ws_test:
             try:
                 msg = await asyncio.wait_for(ws_test.recv(), timeout=3)
-                report("WS /ws/bot bad token rejects", False, f"got message: {msg[:60]}")
+                report("WS /bridge/bot bad token rejects", False, f"got message: {msg[:60]}")
             except websockets.exceptions.ConnectionClosed as e:
-                report("WS /ws/bot bad token rejects", e.code == 4001, f"code={e.code}")
+                report("WS /bridge/bot bad token rejects", e.code == 4001, f"code={e.code}")
     except Exception as e:
-        report("WS /ws/bot bad token rejects", "4001" in str(e) or "403" in str(e), str(e)[:60])
+        report("WS /bridge/bot bad token rejects", "4001" in str(e) or "403" in str(e), str(e)[:60])
 
     # ── 3. Test Chat WS connects, receives bot status ──
     print("\n3. Chat WebSocket Connection")
     try:
-        async with websockets.connect(f"{WS_SERVER}/ws/chat?token={token}") as chat_ws:
+        async with websockets.connect(f"{WS_SERVER}/bridge/chat?token={token}") as chat_ws:
             raw = await asyncio.wait_for(chat_ws.recv(), timeout=5)
             status_msg = json.loads(raw)
             report(
@@ -104,7 +104,7 @@ async def main():
     print("\n4. Bot WebSocket Connection")
     try:
         bot_ws = await websockets.connect(
-            f"{WS_SERVER}/ws/bot?token={token}",
+            f"{WS_SERVER}/bridge/bot?token={token}",
             additional_headers={"X-Astron-Bot-Token": token}
         )
         report("Bot WS connects", True)
@@ -117,7 +117,7 @@ async def main():
     # ── 5. Chat connects and sees bot online ──
     print("\n5. Chat + Bot Interaction")
     try:
-        chat_ws = await websockets.connect(f"{WS_SERVER}/ws/chat?token={token}")
+        chat_ws = await websockets.connect(f"{WS_SERVER}/bridge/chat?token={token}")
         raw = await asyncio.wait_for(chat_ws.recv(), timeout=5)
         status_msg = json.loads(raw)
         report(
@@ -331,9 +331,9 @@ async def main():
     print("\n9. Duplicate Bot Prevention")
     token2 = http_post(f"{SERVER}/api/token")["token"]
 
-    bot1 = await websockets.connect(f"{WS_SERVER}/ws/bot?token={token2}")
+    bot1 = await websockets.connect(f"{WS_SERVER}/bridge/bot?token={token2}")
     try:
-        bot2 = await websockets.connect(f"{WS_SERVER}/ws/bot?token={token2}")
+        bot2 = await websockets.connect(f"{WS_SERVER}/bridge/bot?token={token2}")
         # Should receive error and close
         raw = await asyncio.wait_for(bot2.recv(), timeout=3)
         msg = json.loads(raw)

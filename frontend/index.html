@@ -967,7 +967,7 @@ function connectWebSocket() {
   connectBtn.disabled = true;
   showLoginStatus('<span class="spinner"></span> Connecting...', 'connecting');
 
-  const url = `${serverUrl}/ws/chat?token=${encodeURIComponent(token)}`;
+  const url = `${serverUrl}/bridge/chat?token=${encodeURIComponent(token)}`;
 
   try {
     ws = new WebSocket(url);
@@ -1033,7 +1033,7 @@ function attemptReconnect() {
   clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(() => {
     addSystemMessage(`Reconnecting (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
-    const url = `${serverUrl}/ws/chat?token=${encodeURIComponent(token)}`;
+    const url = `${serverUrl}/bridge/chat?token=${encodeURIComponent(token)}`;
 
     try {
       ws = new WebSocket(url);

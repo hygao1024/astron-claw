@@ -13,7 +13,7 @@ TARGET_DIR="${TARGET_DIR:-$HOME/.openclaw/extensions/astron-claw}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
 
 BOT_TOKEN=""
-SERVER_URL="ws://localhost:8765/ws/bot"
+SERVER_URL="ws://localhost:8765/bridge/bot"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -26,7 +26,7 @@ Usage:
 Options:
   --bot-token <token>       Bot authentication token (required)
   --server-url <url>        Astron bridge WebSocket URL
-                            (default: ws://localhost:8765/ws/bot)
+                            (default: ws://localhost:8765/bridge/bot)
   --target-dir <path>       Plugin install directory
                             (default: ~/.openclaw/extensions/astron-claw)
   -h, --help                Show this help message
