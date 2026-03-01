@@ -14,7 +14,7 @@ class TokenManager:
         self._db_path = db_path
         self._expiry_seconds = expiry_seconds
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA journal_mode=DELETE")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS tokens ("
             "  token TEXT PRIMARY KEY,"
