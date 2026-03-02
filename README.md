@@ -37,7 +37,9 @@ astron-claw/
 │   └── package.json
 ├── docs/
 │   └── api.md              # API 参考文档
-├── install.sh              # 插件安装脚本
+├── scripts/
+│   └── release.sh          # 插件打包脚本
+├── install.sh              # 插件安装脚本（支持远程一行安装）
 ├── uninstall.sh            # 插件卸载脚本
 └── test_integration.py     # 集成测试
 ```
@@ -61,7 +63,14 @@ python3 run.py
 
 ### 2. 安装 OpenClaw 插件
 
-在 Bot 所在的机器上运行：
+在 Bot 所在的机器上一行命令安装（从 GitHub Release 自动下载）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hygao1024-cc/astron-claw/master/install.sh | bash -s -- \
+  --bot-token <token> --server-url ws://<server-ip>:8765/bridge/bot
+```
+
+如果已克隆仓库，也可以直接运行本地脚本：
 
 ```bash
 ./install.sh --bot-token <token> --server-url ws://<server-ip>:8765/bridge/bot
@@ -72,10 +81,15 @@ python3 run.py
 | `--bot-token` | 在 Admin 面板生成的 Token（必填） |
 | `--server-url` | Bridge 服务 WebSocket 地址（默认 `ws://localhost:8765/bridge/bot`） |
 | `--target-dir` | 插件安装目录（默认 `~/.openclaw/extensions/astron-claw`） |
+| `--version` | Release 版本标签（默认 `latest`，仅远程模式） |
 
 ### 3. 卸载插件
 
 ```bash
+# 远程执行
+curl -fsSL https://raw.githubusercontent.com/hygao1024-cc/astron-claw/master/uninstall.sh | bash -s -- -y
+
+# 或本地执行
 ./uninstall.sh       # 交互式确认
 ./uninstall.sh -y    # 静默卸载
 ```

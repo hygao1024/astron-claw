@@ -3,17 +3,25 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # astron-claw installer
-# Installs the astron-claw OpenClaw plugin from local files.
+# Installs the astron-claw OpenClaw plugin.
+# Supports both local (plugin/ directory present) and remote (GitHub Release
+# download) modes, so it works equally well from a git clone or via:
+#
+#   curl -fsSL https://raw.githubusercontent.com/hygao1024-cc/astron-claw/master/install.sh | bash -s -- \
+#     --bot-token <token> --server-url ws://server:8765/bridge/bot
 # ---------------------------------------------------------------------------
 
+GITHUB_REPO="hygao1024-cc/astron-claw"
+TARBALL_NAME="astron-claw-plugin.tar.gz"
+
 OPENCLAW_BIN="${OPENCLAW_BIN:-openclaw}"
-NPM_BIN="${NPM_BIN:-npm}"
 PLUGIN_NAME="astron-claw"
 TARGET_DIR="${TARGET_DIR:-$HOME/.openclaw/extensions/astron-claw}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
 
 BOT_TOKEN=""
 SERVER_URL="ws://localhost:8765/bridge/bot"
+VERSION="latest"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -21,7 +29,7 @@ SERVER_URL="ws://localhost:8765/bridge/bot"
 usage() {
   cat <<'USAGE'
 Usage:
-  ./install.sh --bot-token <token> [options]
+  install.sh --bot-token <token> [options]
 
 Options:
   --bot-token <token>       Bot authentication token (required)
@@ -29,6 +37,8 @@ Options:
                             (default: ws://localhost:8765/bridge/bot)
   --target-dir <path>       Plugin install directory
                             (default: ~/.openclaw/extensions/astron-claw)
+  --version <tag>           Release version to download (default: latest)
+                            Only used in remote mode (no local plugin/ dir)
   -h, --help                Show this help message
 USAGE
 }
@@ -80,6 +90,11 @@ while [ "$#" -gt 0 ]; do
       TARGET_DIR="$2"
       shift 2
       ;;
+    --version)
+      need_next_arg "$1" "$#"
+      VERSION="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -105,21 +120,52 @@ fi
 # Check prerequisites
 # ---------------------------------------------------------------------------
 require_cmd "$OPENCLAW_BIN" "Install OpenClaw CLI then retry: https://docs.openclaw.dev"
-require_cmd "$NPM_BIN" "Install Node.js + npm then retry: https://nodejs.org"
 require_cmd node "Install Node.js then retry: https://nodejs.org"
 
 log "prerequisites check passed"
 
 # ---------------------------------------------------------------------------
-# Locate plugin source directory (relative to this script)
+# Determine plugin source: local directory or remote tarball
 # ---------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)"
 PLUGIN_SRC="$SCRIPT_DIR/plugin"
+TMP_DIR=""
+USE_LOCAL="0"
 
-if [ ! -f "$PLUGIN_SRC/package.json" ]; then
-  log_error "plugin source not found at $PLUGIN_SRC"
-  log_error "ensure the 'plugin/' directory exists alongside install.sh"
-  exit 1
+if [ -d "$PLUGIN_SRC" ] && [ -f "$PLUGIN_SRC/package.json" ]; then
+  USE_LOCAL="1"
+  log "detected local plugin directory: $PLUGIN_SRC"
+else
+  log "no local plugin/ directory found, will download from GitHub Release"
+  require_cmd curl "Install curl then retry"
+  require_cmd tar  "Install tar then retry"
+
+  TMP_DIR="$(mktemp -d)"
+
+  # Build download URL
+  if [ "$VERSION" = "latest" ]; then
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/${TARBALL_NAME}"
+  else
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/${TARBALL_NAME}"
+  fi
+
+  log "downloading $DOWNLOAD_URL"
+  if ! curl -fSL "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL_NAME"; then
+    log_error "failed to download release tarball"
+    log_error "URL: $DOWNLOAD_URL"
+    rm -rf "$TMP_DIR"
+    exit 1
+  fi
+
+  log "extracting tarball"
+  tar -xzf "$TMP_DIR/$TARBALL_NAME" -C "$TMP_DIR"
+  PLUGIN_SRC="$TMP_DIR/plugin"
+
+  if [ ! -f "$PLUGIN_SRC/package.json" ]; then
+    log_error "tarball does not contain expected plugin/ directory"
+    rm -rf "$TMP_DIR"
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -143,6 +189,10 @@ cleanup() {
   if [ "$exit_code" -eq 0 ] && [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
     rm -rf "$BACKUP_DIR"
   fi
+  # Clean up temp download directory
+  if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -164,13 +214,20 @@ mkdir -p "$TARGET_DIR"
 cp -r "$PLUGIN_SRC/"* "$TARGET_DIR/"
 
 # ---------------------------------------------------------------------------
-# Install npm dependencies
+# Install npm dependencies (only in local mode — tarball already includes
+# node_modules)
 # ---------------------------------------------------------------------------
-log "installing npm dependencies"
-(
-  cd "$TARGET_DIR"
-  "$NPM_BIN" install --omit=dev
-)
+if [ "$USE_LOCAL" = "1" ] && [ ! -d "$TARGET_DIR/node_modules" ]; then
+  NPM_BIN="${NPM_BIN:-npm}"
+  require_cmd "$NPM_BIN" "Install Node.js + npm then retry: https://nodejs.org"
+  log "installing npm dependencies"
+  (
+    cd "$TARGET_DIR"
+    "$NPM_BIN" install --omit=dev
+  )
+else
+  log "node_modules present, skipping npm install"
+fi
 
 # ---------------------------------------------------------------------------
 # Verify plugin can be loaded
