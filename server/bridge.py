@@ -22,8 +22,10 @@ class ConnectionBridge:
         self._chats: dict[str, set[WebSocket]] = {}
         # request_id -> token (to route bot responses back)
         self._pending_requests: dict[str, str] = {}
-        # token -> current session id
-        self._sessions: dict[str, str] = {}
+        # token -> ordered list of session IDs
+        self._session_list: dict[str, list[str]] = {}
+        # token -> currently active session ID
+        self._active_session: dict[str, str] = {}
 
     def register_bot(self, token: str, ws: WebSocket) -> bool:
         """Register a bot connection. Returns False if a bot is already connected."""
@@ -34,7 +36,8 @@ class ConnectionBridge:
 
     def unregister_bot(self, token: str) -> None:
         self._bots.pop(token, None)
-        self._sessions.pop(token, None)
+        self._session_list.pop(token, None)
+        self._active_session.pop(token, None)
 
     def register_chat(self, token: str, ws: WebSocket) -> None:
         if token not in self._chats:
@@ -47,6 +50,35 @@ class ConnectionBridge:
             if not self._chats[token]:
                 del self._chats[token]
 
+    def create_session(self, token: str) -> tuple[str, int]:
+        """Create a new session, append to list, set as active. Returns (session_id, session_number)."""
+        session_id = str(uuid.uuid4())
+        if token not in self._session_list:
+            self._session_list[token] = []
+        self._session_list[token].append(session_id)
+        self._active_session[token] = session_id
+        session_number = len(self._session_list[token])
+        return session_id, session_number
+
+    def reset_session(self, token: str) -> tuple[str, int]:
+        """Reset the session for a token by creating a new one. Returns (session_id, session_number)."""
+        return self.create_session(token)
+
+    def switch_session(self, token: str, session_id: str) -> bool:
+        """Switch the active session. Returns False if session_id not found."""
+        sessions = self._session_list.get(token, [])
+        if session_id not in sessions:
+            return False
+        self._active_session[token] = session_id
+        return True
+
+    def get_sessions(self, token: str) -> tuple[list[tuple[str, int]], str]:
+        """Return ([(id, number), ...], active_id) for the token."""
+        sessions = self._session_list.get(token, [])
+        numbered = [(sid, i + 1) for i, sid in enumerate(sessions)]
+        active_id = self._active_session.get(token, "")
+        return numbered, active_id
+
     def is_bot_connected(self, token: str) -> bool:
         return token in self._bots
 
@@ -56,10 +88,11 @@ class ConnectionBridge:
         if not bot_ws:
             return None
 
-        session_id = self._sessions.get(token)
+        session_id = self._active_session.get(token)
         if not session_id:
-            session_id = str(uuid.uuid4())
-            self._sessions[token] = session_id
+            session_id, _ = self.create_session(token)
+
+        logger.info("send_to_bot: token=%s... session_id=%s", token[:10], session_id)
 
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         self._pending_requests[request_id] = token

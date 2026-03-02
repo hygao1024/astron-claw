@@ -12,8 +12,9 @@ Chat Client ──WebSocket──▶ Bridge Server ◀──WebSocket── Bot 
 - **WebSocket 双向桥接** — Bot 无需公网 IP，主动出站连接即可
 - **Token 管理** — 支持自定义名称、多种过期时间（1h/6h/1d/7d/30d/永不过期）
 - **流式传输** — 支持思考过程、文本片段、工具调用等多种消息类型
+- **多会话管理** — 支持创建多个独立会话并自由切换，每个会话上下文隔离
 - **Admin 管理面板** — 密码认证、Token CRUD、在线状态监控
-- **Web 聊天界面** — 内置 Chat 前端，输入 Token 即可与 Bot 对话
+- **Web 聊天界面** — 内置 Chat 前端，输入 Token 即可与 Bot 对话，左侧抽屉管理会话（支持固定/浮动模式）
 - **OpenClaw 插件** — 一键安装，桥接本地 OpenClaw Gateway
 
 ## 项目结构
@@ -108,7 +109,7 @@ curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/master/uninst
 | `DELETE` | `/api/admin/tokens/{token}` | 删除 Token |
 | `POST` | `/api/admin/cleanup` | 清理过期 Token |
 | WebSocket | `/bridge/bot` | Bot 端连接 |
-| WebSocket | `/bridge/chat` | Chat 端连接 |
+| WebSocket | `/bridge/chat` | Chat 端连接（支持多会话切换） |
 
 ## 技术栈
 

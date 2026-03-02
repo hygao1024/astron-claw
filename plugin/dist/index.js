@@ -645,7 +645,7 @@ class AcpBridgeCore {
   }
 
   _handleSessionNew(id, params) {
-    const sessionId = MAIN_SESSION_KEY;
+    const sessionId = (params && params.sessionId) || MAIN_SESSION_KEY;
     this._sendResult(id, {
       sessionId,
       modes: {
@@ -661,7 +661,7 @@ class AcpBridgeCore {
       return;
     }
 
-    const sessionId = MAIN_SESSION_KEY;
+    const sessionId = (params && params.sessionId) || MAIN_SESSION_KEY;
 
     if (!this.isGatewayReady()) {
       this._sendError(id, -32001, "gateway unavailable");
@@ -718,9 +718,11 @@ class AcpBridgeCore {
       return;
     }
 
+    const targetSessionId = (params && params.sessionId) || MAIN_SESSION_KEY;
+
     // Find the active prompt and cancel it
     for (const [, prompt] of this.inFlightPrompts) {
-      if (!prompt.done && prompt.sessionId === MAIN_SESSION_KEY) {
+      if (!prompt.done && prompt.sessionId === targetSessionId) {
         // Send cancel to gateway
         const cancelFrame = {
           type: "req",
@@ -738,7 +740,7 @@ class AcpBridgeCore {
     }
 
     if (id !== undefined) {
-      this._sendResult(id, {}, MAIN_SESSION_KEY);
+      this._sendResult(id, {}, targetSessionId);
     }
   }
 
@@ -892,9 +894,9 @@ class AcpBridgeCore {
     if (nestedReqId && this.inFlightPrompts.has(nestedReqId)) {
       return this.inFlightPrompts.get(nestedReqId);
     }
-    // Fallback: return any in-flight prompt for the main session
+    // Fallback: return any in-flight prompt
     for (const [, p] of this.inFlightPrompts) {
-      if (!p.done && p.sessionId === MAIN_SESSION_KEY) return p;
+      if (!p.done) return p;
     }
     return null;
   }

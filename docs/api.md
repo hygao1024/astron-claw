@@ -646,7 +646,7 @@ ws://{host}:{port}/bridge/chat?token={token}
 
 | 场景 | 行为 |
 |------|------|
-| Token 有效 | 连接保持，服务端立即推送一条 `bot_status` 消息 |
+| Token 有效 | 连接保持，服务端依次推送 `bot_status` 和 `session_info` 消息 |
 | Token 无效/过期 | 服务端关闭连接，close code `4001`，reason `"Invalid or missing token"` |
 
 ---
@@ -655,17 +655,40 @@ ws://{host}:{port}/bridge/chat?token={token}
 
 客户端通过 WebSocket 发送 JSON 文本帧。
 
-**消息结构：**
+#### `message` — 发送用户消息
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `type` | string | 是 | 固定为 `"message"` |
 | `content` | string | 是 | 用户消息文本，不能为空 |
 
-**示例：**
-
 ```json
 {"type": "message", "content": "你好，请帮我写一段代码"}
+```
+
+#### `new_session` — 新建会话
+
+创建一个新会话并设为当前活跃会话。服务端返回 `new_session_ack`。
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | string | 是 | 固定为 `"new_session"` |
+
+```json
+{"type": "new_session"}
+```
+
+#### `switch_session` — 切换会话
+
+切换到一个已有的会话。服务端返回 `switch_session_ack`，失败返回 `error`。
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | string | 是 | 固定为 `"switch_session"` |
+| `sessionId` | string | 是 | 目标会话 ID |
+
+```json
+{"type": "switch_session", "sessionId": "550e8400-e29b-41d4-a716-446655440000"}
 ```
 
 ---
@@ -685,6 +708,74 @@ ws://{host}:{port}/bridge/chat?token={token}
 
 ```json
 {"type": "bot_status", "connected": true}
+```
+
+#### `session_info` — 会话信息（连接时推送）
+
+连接成功后推送，包含当前活跃会话及所有会话列表。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"session_info"` |
+| `sessionId` | string | 当前会话 ID |
+| `sessionNumber` | integer | 当前会话编号 |
+| `sessions` | array | 所有会话列表，每项含 `id`（string）和 `number`（integer） |
+| `activeSessionId` | string | 当前活跃会话 ID |
+
+```json
+{
+  "type": "session_info",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "sessionNumber": 1,
+  "sessions": [
+    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1}
+  ],
+  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+#### `new_session_ack` — 新建会话确认
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"new_session_ack"` |
+| `sessionId` | string | 新会话 ID |
+| `sessionNumber` | integer | 新会话编号 |
+| `sessions` | array | 更新后的所有会话列表 |
+| `activeSessionId` | string | 当前活跃会话 ID（即新会话） |
+
+```json
+{
+  "type": "new_session_ack",
+  "sessionId": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "sessionNumber": 2,
+  "sessions": [
+    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
+    {"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "number": 2}
+  ],
+  "activeSessionId": "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+}
+```
+
+#### `switch_session_ack` — 切换会话确认
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"switch_session_ack"` |
+| `sessionId` | string | 切换到的会话 ID |
+| `sessions` | array | 所有会话列表 |
+| `activeSessionId` | string | 当前活跃会话 ID |
+
+```json
+{
+  "type": "switch_session_ack",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "sessions": [
+    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
+    {"id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "number": 2}
+  ],
+  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
+}
 ```
 
 #### `chunk` — Bot 回复文本片段（流式）
@@ -774,6 +865,7 @@ Client                          Server                          Bot
   │                               │                              │
   ├── WS connect ────────────────►│                              │
   │◄── bot_status ────────────────┤                              │
+  │◄── session_info ──────────────┤                              │
   │                               │                              │
   ├── {"type":"message"} ────────►│── JSON-RPC request ─────────►│
   │                               │                              │
@@ -784,6 +876,12 @@ Client                          Server                          Bot
   │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
   │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
   │◄── {"type":"done"} ───────────┤◄── JSON-RPC response ────────┤
+  │                               │                              │
+  ├── {"type":"new_session"} ────►│                              │
+  │◄── new_session_ack ───────────┤                              │
+  │                               │                              │
+  ├── {"type":"switch_session"} ─►│                              │
+  │◄── switch_session_ack ────────┤                              │
   │                               │                              │
 ```
 
@@ -1017,7 +1115,7 @@ Token 支持两种传递方式（二选一）：
 | `jsonrpc` | string | 固定 `"2.0"` |
 | `id` | string | 请求唯一标识（`req_` 前缀），回复时需原样返回 |
 | `method` | string | 固定 `"session/prompt"` |
-| `params.sessionId` | string | 会话 ID，同一 Token 多次对话共享 |
+| `params.sessionId` | string | 会话 ID，不同会话使用不同 ID 以隔离上下文 |
 | `params.prompt.content` | array | 消息内容，`[{"type": "text", "text": "..."}]` |
 
 **示例：**
