@@ -9,7 +9,12 @@ set -euo pipefail
 #
 #   curl -fsSL https://raw.githubusercontent.com/hygao1024-cc/astron-claw/master/install.sh | bash -s -- \
 #     --bot-token <token> --server-url ws://server:8765/bridge/bot
+#
+# Wrapped in main() so `curl ... | bash` reads the entire script before
+# executing — prevents sub-commands from consuming stdin.
 # ---------------------------------------------------------------------------
+
+main() {
 
 GITHUB_REPO="hygao1024-cc/astron-claw"
 TARBALL_NAME="astron-claw-plugin.tar.gz"
@@ -180,9 +185,9 @@ cleanup() {
     log "install failed (exit=$exit_code), rolling back..."
     rm -rf "$TARGET_DIR"
     mv "$BACKUP_DIR" "$TARGET_DIR"
-    "$OPENCLAW_BIN" plugins install -l "$TARGET_DIR" >/dev/null 2>&1 || true
-    "$OPENCLAW_BIN" plugins enable "$PLUGIN_NAME" >/dev/null 2>&1 || true
-    "$OPENCLAW_BIN" gateway restart >/dev/null 2>&1 || true
+    "$OPENCLAW_BIN" plugins install -l "$TARGET_DIR" </dev/null >/dev/null 2>&1 || true
+    "$OPENCLAW_BIN" plugins enable "$PLUGIN_NAME" </dev/null >/dev/null 2>&1 || true
+    "$OPENCLAW_BIN" gateway restart </dev/null >/dev/null 2>&1 || true
     log "rollback completed"
   fi
   # Clean up backup on success
@@ -246,11 +251,11 @@ fi
 log "registering plugin with OpenClaw"
 
 # Disable any previous version first
-"$OPENCLAW_BIN" plugins disable "$PLUGIN_NAME" >/dev/null 2>&1 || true
+"$OPENCLAW_BIN" plugins disable "$PLUGIN_NAME" </dev/null >/dev/null 2>&1 || true
 
 # Install from local path and enable
-"$OPENCLAW_BIN" plugins install -l "$TARGET_DIR" >/dev/null 2>&1 || true
-"$OPENCLAW_BIN" plugins enable "$PLUGIN_NAME"
+"$OPENCLAW_BIN" plugins install -l "$TARGET_DIR" </dev/null >/dev/null 2>&1 || true
+"$OPENCLAW_BIN" plugins enable "$PLUGIN_NAME" </dev/null
 
 # ---------------------------------------------------------------------------
 # Write plugin configuration
@@ -267,7 +272,7 @@ CONFIG_JSON=$(node -e "
   process.stdout.write(JSON.stringify(cfg));
 ")
 
-"$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME.config" --json "$CONFIG_JSON"
+"$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME.config" --json "$CONFIG_JSON" </dev/null
 log "plugin config updated"
 
 # ---------------------------------------------------------------------------
@@ -279,8 +284,12 @@ ROLLBACK_NEEDED="0"
 # Restart gateway to load the new plugin
 # ---------------------------------------------------------------------------
 log "restarting OpenClaw gateway"
-"$OPENCLAW_BIN" gateway restart >/dev/null 2>&1 || true
+"$OPENCLAW_BIN" gateway restart </dev/null >/dev/null 2>&1 || true
 
 log "done! astron-claw plugin installed successfully"
 log "bridge server: $SERVER_URL"
 log "plugin directory: $TARGET_DIR"
+
+}
+
+main "$@"

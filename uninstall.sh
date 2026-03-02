@@ -4,7 +4,12 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # astron-claw uninstaller
 # Removes the astron-claw OpenClaw plugin and its configuration.
+#
+# Wrapped in main() so `curl ... | bash` reads the entire script before
+# executing — prevents sub-commands from consuming stdin.
 # ---------------------------------------------------------------------------
+
+main() {
 
 OPENCLAW_BIN="${OPENCLAW_BIN:-openclaw}"
 PLUGIN_NAME="astron-claw"
@@ -16,7 +21,7 @@ TARGET_DIR="${TARGET_DIR:-$HOME/.openclaw/extensions/astron-claw}"
 usage() {
   cat <<'USAGE'
 Usage:
-  ./uninstall.sh [options]
+  uninstall.sh [options]
 
 Options:
   --target-dir <path>       Plugin install directory
@@ -78,7 +83,7 @@ if [ "$SKIP_CONFIRM" != "1" ]; then
   printf "[astron-uninstall] This will remove the astron-claw plugin.\n"
   printf "[astron-uninstall]   Plugin directory: %s\n" "$TARGET_DIR"
   printf "[astron-uninstall] Continue? [y/N] "
-  read -r answer
+  read -r answer </dev/tty || { log_error "cannot read from terminal (use -y for non-interactive mode)"; exit 1; }
   case "$answer" in
     [yY]|[yY][eE][sS]) ;;
     *)
@@ -101,14 +106,14 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$HAS_OPENCLAW" = "1" ]; then
   log "disabling plugin"
-  "$OPENCLAW_BIN" plugins disable "$PLUGIN_NAME" >/dev/null 2>&1 || true
+  "$OPENCLAW_BIN" plugins disable "$PLUGIN_NAME" </dev/null >/dev/null 2>&1 || true
 
   log "unregistering plugin"
-  "$OPENCLAW_BIN" plugins uninstall "$PLUGIN_NAME" >/dev/null 2>&1 || true
+  "$OPENCLAW_BIN" plugins uninstall "$PLUGIN_NAME" </dev/null >/dev/null 2>&1 || true
 
   if [ "$KEEP_CONFIG" != "1" ]; then
     log "removing plugin config"
-    "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "null" >/dev/null 2>&1 || true
+    "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "null" </dev/null >/dev/null 2>&1 || true
   else
     log "keeping plugin config (--keep-config)"
   fi
@@ -140,7 +145,11 @@ done
 # ---------------------------------------------------------------------------
 if [ "$HAS_OPENCLAW" = "1" ]; then
   log "restarting OpenClaw gateway"
-  "$OPENCLAW_BIN" gateway restart >/dev/null 2>&1 || true
+  "$OPENCLAW_BIN" gateway restart </dev/null >/dev/null 2>&1 || true
 fi
 
 log "done! astron-claw plugin has been removed"
+
+}
+
+main "$@"
