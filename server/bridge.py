@@ -210,16 +210,6 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
                     if isinstance(inner, dict):
                         input_text += inner.get("text", "")
             return {"type": "tool_call", "name": title, "input": input_text}
-        if update_type == "tool_call_update":
-            title = update.get("title", "tool")
-            tool_content = update.get("content", [])
-            result_text = ""
-            if tool_content and isinstance(tool_content, list):
-                for item in tool_content:
-                    inner = item.get("content", {}) if isinstance(item, dict) else {}
-                    if isinstance(inner, dict):
-                        result_text += inner.get("text", "")
-            return {"type": "tool_result", "content": result_text}
         # Forward unrecognized update types as generic chunks
         if isinstance(content, dict) and "text" in content:
             return {"type": "chunk", "content": content["text"]}

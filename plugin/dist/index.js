@@ -806,21 +806,6 @@ class AcpBridgeCore {
             status: "in_progress",
             content: [{ type: "content", content: { type: "text", text: JSON.stringify(args, null, 2) } }],
           }, prompt.rpcId);
-        } else if (type === "toolResult") {
-          const toolCallId = this._readToolCallId(block) ?? `tc_${prompt.gatewayRequestId}_result_${Date.now()}`;
-          const name = typeof block.name === "string" ? block.name : "tool";
-          const resultText = this._normalizeText(block.text)
-            ?? this._normalizeText(block.result)
-            ?? (typeof block.result === "object" ? JSON.stringify(block.result, null, 2) : undefined);
-          if (resultText) {
-            this._sendSessionUpdate(prompt.sessionId, {
-              sessionUpdate: "tool_call_update",
-              toolCallId,
-              title: name,
-              status: "completed",
-              content: [{ type: "content", content: { type: "text", text: resultText } }],
-            }, prompt.rpcId);
-          }
         }
       }
       return;
@@ -851,18 +836,6 @@ class AcpBridgeCore {
           title: toolName,
           status: "in_progress",
           content: [{ type: "content", content: { type: "text", text: JSON.stringify(args, null, 2) } }],
-        }, prompt.rpcId);
-      } else if (phase === "result") {
-        const resultText = this._normalizeText(data.text)
-          ?? this._normalizeText(data.result)
-          ?? (typeof data.result === "object" ? JSON.stringify(data.result, null, 2) : undefined)
-          ?? "";
-        this._sendSessionUpdate(prompt.sessionId, {
-          sessionUpdate: "tool_call_update",
-          toolCallId,
-          title: toolName,
-          status: "completed",
-          content: [{ type: "content", content: { type: "text", text: resultText } }],
         }, prompt.rpcId);
       }
       return;

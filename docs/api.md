@@ -814,17 +814,6 @@ Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
 {"type": "tool_call", "name": "Read file", "input": "src/main.py"}
 ```
 
-#### `tool_result` — 工具执行结果
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"tool_result"` |
-| `content` | string | 执行结果 |
-
-```json
-{"type": "tool_result", "content": "import os\nimport sys..."}
-```
-
 #### `done` — 本轮回复结束
 
 收到此消息表示 Bot 对当前提问的回复已完成。
@@ -872,7 +861,6 @@ Client                          Server                          Bot
   │◄── {"type":"thinking"} ───────┤◄── session/update ───────────┤
   │◄── {"type":"thinking"} ───────┤◄── session/update ───────────┤
   │◄── {"type":"tool_call"} ──────┤◄── session/update ───────────┤
-  │◄── {"type":"tool_result"} ────┤◄── session/update ───────────┤
   │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
   │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
   │◄── {"type":"done"} ───────────┤◄── JSON-RPC response ────────┤
@@ -921,10 +909,6 @@ ws.onmessage = (event) => {
 
     case 'tool_call':
       console.log(`\n[Tool: ${msg.name}] ${msg.input}`);
-      break;
-
-    case 'tool_result':
-      console.log(`[Result] ${msg.content.slice(0, 100)}...`);
       break;
 
     case 'done':
@@ -995,9 +979,6 @@ async def chat(token: str, message: str):
 
             elif msg_type == "tool_call":
                 print(f"\n[Tool: {msg['name']}] {msg['input']}")
-
-            elif msg_type == "tool_result":
-                print(f"[Result] {msg['content'][:100]}...")
 
             elif msg_type == "done":
                 print("\n--- Reply complete ---")
@@ -1163,7 +1144,6 @@ Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
 | `agent_message_chunk` | Bot 回复文本片段 | `chunk` |
 | `agent_thought_chunk` | Bot 思考过程片段 | `thinking` |
 | `tool_call` | 工具调用 | `tool_call` |
-| `tool_call_update` | 工具调用结果 | `tool_result` |
 
 **回复文本片段示例：**
 

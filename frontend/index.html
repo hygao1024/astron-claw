@@ -477,11 +477,6 @@ html, body {
   overflow-y: auto;
 }
 
-.tool-result .tool-header {
-  color: var(--success);
-  background: rgba(34, 197, 94, 0.06);
-}
-
 /* -- Streaming / Typing -- */
 .typing-indicator {
   display: flex;
@@ -1339,9 +1334,6 @@ function handleServerMessage(msg) {
     case 'tool_call':
       handleToolCall(msg.name || 'unknown', msg.input || '');
       break;
-    case 'tool_result':
-      handleToolResult(msg.content || '');
-      break;
     case 'done':
       handleDone();
       break;
@@ -1424,28 +1416,6 @@ function handleToolCall(name, input) {
       <span>${escapeHtml(name)}</span>
     </div>
     <div class="tool-body">${escapeHtml(formattedInput)}</div>
-  `;
-  list.appendChild(block);
-  scrollToBottom();
-}
-
-function handleToolResult(content) {
-  const list = document.getElementById('messages-list');
-  const block = document.createElement('div');
-  block.className = 'tool-block tool-result';
-
-  let formattedContent = content;
-  try {
-    const parsed = JSON.parse(content);
-    formattedContent = JSON.stringify(parsed, null, 2);
-  } catch { /* keep original */ }
-
-  block.innerHTML = `
-    <div class="tool-header">
-      <span class="tool-icon">&#10003;</span>
-      <span>Result</span>
-    </div>
-    <div class="tool-body">${escapeHtml(formattedContent)}</div>
   `;
   list.appendChild(block);
   scrollToBottom();
