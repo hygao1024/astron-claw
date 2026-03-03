@@ -281,6 +281,10 @@ fi
 # ---------------------------------------------------------------------------
 log "registering channel plugin with OpenClaw"
 
+# Ensure cwd is valid — the backup step may have removed the directory the
+# caller was sitting in, which causes Node.js (openclaw) to fail with ENOENT.
+cd /
+
 # Disable any previous version first
 "$OPENCLAW_BIN" plugins disable "$PLUGIN_NAME" </dev/null >/dev/null 2>&1 || true
 
