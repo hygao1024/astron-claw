@@ -1,21 +1,18 @@
-import { randomUUID, generateKeyPairSync, createPublicKey, createHash, createPrivateKey, sign } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import WebSocket from "ws";
+import { loadWebMedia } from "openclaw/plugin-sdk";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 const PLUGIN_ID = "astron-claw";
-const PLUGIN_VERSION = "1.0.0";
+const PLUGIN_VERSION = "2.0.0";
+const DEFAULT_ACCOUNT_ID = "default";
 
 const DEFAULT_BRIDGE_URL = "ws://localhost:8765/bridge/bot";
-const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:18789";
-const DEFAULT_GATEWAY_PROTOCOL = 3;
-const DEFAULT_GATEWAY_CLIENT_ID = "gateway-client";
-const DEFAULT_GATEWAY_CLIENT_MODE = "backend";
-const DEFAULT_GATEWAY_AGENT_ID = "main";
 
 const DEFAULT_RETRY_BASE_MS = 1000;
 const DEFAULT_RETRY_MAX_MS = 60000;
@@ -24,7 +21,41 @@ const DEFAULT_RETRY_MAX_ATTEMPTS = 0; // 0 = unlimited
 const LIVENESS_PING_INTERVAL_MS = 15000;
 const LIVENESS_TIMEOUT_MS = 60000;
 
-const MAIN_SESSION_KEY = "agent:main:main";
+const MEDIA_MAX_SIZE_DEFAULT = 50 * 1024 * 1024; // 50MB
+const MEDIA_ALLOWED_TYPES_DEFAULT = [
+  "image/*", "audio/*", "video/*",
+  "application/pdf", "application/zip",
+  "text/plain", "application/octet-stream",
+];
+
+// ---------------------------------------------------------------------------
+// Logger
+// ---------------------------------------------------------------------------
+let _logger = console;
+
+function setLogger(l) {
+  _logger = l ?? console;
+}
+
+const logger = {
+  info: (...args) => _logger.info?.("[AstronClaw]", ...args),
+  warn: (...args) => _logger.warn?.("[AstronClaw]", ...args),
+  error: (...args) => _logger.error?.("[AstronClaw]", ...args),
+  debug: (...args) => _logger.debug?.("[AstronClaw]", ...args),
+};
+
+// ---------------------------------------------------------------------------
+// Runtime singleton (holds PluginRuntime reference)
+// ---------------------------------------------------------------------------
+let _runtime = null;
+
+function setRuntime(rt) {
+  _runtime = rt;
+}
+
+function getRuntime() {
+  return _runtime;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,336 +69,409 @@ function readNum(v) {
 }
 
 // ---------------------------------------------------------------------------
-// Device Identity (Ed25519) - required by OpenClaw gateway handshake
+// Account resolution
 // ---------------------------------------------------------------------------
-const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
-const DEFAULT_IDENTITY_PATH = join(homedir(), ".openclaw", "plugins", "astron-claw", "device.json");
+function resolveAstronClawAccountFromCfg(cfg) {
+  const pluginCfg = cfg?.channels?.[PLUGIN_ID]
+    ?? cfg?.plugins?.entries?.[PLUGIN_ID]?.config
+    ?? {};
 
-function base64UrlEncode(buf) {
-  return buf.toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
-}
+  const bridge = pluginCfg.bridge ?? {};
+  const retry = pluginCfg.retry ?? {};
+  const media = pluginCfg.media ?? {};
 
-function derivePublicKeyRaw(pem) {
-  const der = createPublicKey(pem).export({ type: "spki", format: "der" });
-  if (der.length === ED25519_SPKI_PREFIX.length + 32 &&
-      der.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)) {
-    return der.subarray(ED25519_SPKI_PREFIX.length);
-  }
-  return der;
-}
-
-function fingerprintPublicKey(pem) {
-  const raw = derivePublicKeyRaw(pem);
-  return createHash("sha256").update(raw).digest("hex");
-}
-
-function loadOrCreateDeviceIdentity(identityPath = DEFAULT_IDENTITY_PATH) {
-  try {
-    if (existsSync(identityPath)) {
-      const data = JSON.parse(readFileSync(identityPath, "utf8"));
-      if (data?.version === 1 && data.publicKeyPem && data.privateKeyPem) {
-        const deviceId = fingerprintPublicKey(data.publicKeyPem);
-        return { deviceId, publicKeyPem: data.publicKeyPem, privateKeyPem: data.privateKeyPem };
-      }
-    }
-  } catch {}
-
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
-  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-  const deviceId = fingerprintPublicKey(publicKeyPem);
-
-  mkdirSync(join(identityPath, ".."), { recursive: true });
-  const identity = { version: 1, deviceId, publicKeyPem, privateKeyPem, createdAtMs: Date.now() };
-  writeFileSync(identityPath, JSON.stringify(identity, null, 2) + "\n", { mode: 0o600 });
-  try { chmodSync(identityPath, 0o600); } catch {}
-
-  return { deviceId, publicKeyPem, privateKeyPem };
-}
-
-function buildDeviceAuthField({ identity, clientId, clientMode, role, scopes, token, nonce }) {
-  const signedAtMs = Date.now();
-  const parts = [
-    nonce ? "v2" : "v1",
-    identity.deviceId,
-    clientId,
-    clientMode,
-    role,
-    scopes.join(","),
-    String(signedAtMs),
-    token ?? "",
-  ];
-  if (nonce) parts.push(nonce);
-  const payload = parts.join("|");
-
-  const privKey = createPrivateKey(identity.privateKeyPem);
-  const signature = base64UrlEncode(sign(null, Buffer.from(payload, "utf8"), privKey));
-  const publicKeyRaw = base64UrlEncode(derivePublicKeyRaw(identity.publicKeyPem));
-
-  const result = { id: identity.deviceId, publicKey: publicKeyRaw, signature, signedAt: signedAtMs };
-  if (nonce) result.nonce = nonce;
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Resolve config from pluginConfig
-// ---------------------------------------------------------------------------
-function resolveConfig(pluginConfig) {
-  const pc = pluginConfig ?? {};
-  const b = pc.bridge ?? {};
-  const g = pc.gateway ?? {};
-  const r = pc.retry ?? {};
   return {
+    accountId: DEFAULT_ACCOUNT_ID,
+    enabled: pluginCfg.enabled !== false,
+    name: readStr(pluginCfg.name) ?? "AstronClaw",
     bridge: {
-      url: readStr(b.url) ?? DEFAULT_BRIDGE_URL,
-      token: readStr(b.token) ?? "",
-    },
-    gateway: {
-      url: readStr(g.url) ?? DEFAULT_GATEWAY_URL,
-      protocol: readNum(g.protocol) ?? DEFAULT_GATEWAY_PROTOCOL,
-      clientId: readStr(g.clientId) ?? DEFAULT_GATEWAY_CLIENT_ID,
-      clientMode: readStr(g.clientMode) ?? DEFAULT_GATEWAY_CLIENT_MODE,
-      agentId: readStr(g.agentId) ?? DEFAULT_GATEWAY_AGENT_ID,
+      url: readStr(bridge.url) ?? DEFAULT_BRIDGE_URL,
+      token: readStr(bridge.token) ?? "",
     },
     retry: {
-      baseMs: readNum(r.baseMs) ?? DEFAULT_RETRY_BASE_MS,
-      maxMs: readNum(r.maxMs) ?? DEFAULT_RETRY_MAX_MS,
-      maxAttempts: readNum(r.maxAttempts) ?? DEFAULT_RETRY_MAX_ATTEMPTS,
+      baseMs: readNum(retry.baseMs) ?? DEFAULT_RETRY_BASE_MS,
+      maxMs: readNum(retry.maxMs) ?? DEFAULT_RETRY_MAX_MS,
+      maxAttempts: readNum(retry.maxAttempts) ?? DEFAULT_RETRY_MAX_ATTEMPTS,
     },
+    allowFrom: Array.isArray(pluginCfg.allowFrom) ? pluginCfg.allowFrom : ["*"],
+    media: {
+      maxSize: readNum(media.maxSize) ?? MEDIA_MAX_SIZE_DEFAULT,
+      allowedTypes: Array.isArray(media.allowedTypes) ? media.allowedTypes : MEDIA_ALLOWED_TYPES_DEFAULT,
+    },
+    tokenSource: bridge.token ? "config" : "none",
+  };
+}
+
+function resolveAstronClawAccount() {
+  const rt = getRuntime();
+  if (!rt) return null;
+
+  let cfg;
+  try {
+    cfg = rt.config?.loadConfig?.() ?? {};
+  } catch {
+    cfg = {};
+  }
+  return resolveAstronClawAccountFromCfg(cfg);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime state tracking
+// ---------------------------------------------------------------------------
+const runtimeState = new Map();
+
+function recordChannelRuntimeState(accountId, updates) {
+  const key = `${PLUGIN_ID}:${accountId}`;
+  const current = runtimeState.get(key) ?? {
+    running: false,
+    lastStartAt: null,
+    lastStopAt: null,
+    lastError: null,
+    lastInboundAt: null,
+    lastOutboundAt: null,
+  };
+  Object.assign(current, updates);
+  runtimeState.set(key, current);
+}
+
+function getChannelRuntimeState(accountId) {
+  return runtimeState.get(`${PLUGIN_ID}:${accountId}`) ?? {
+    running: false,
+    lastStartAt: null,
+    lastStopAt: null,
+    lastError: null,
+    lastInboundAt: null,
+    lastOutboundAt: null,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Gateway WebSocket client (with handshake)
+// Bridge REST API client (for media upload/download)
 // ---------------------------------------------------------------------------
-class GatewayClient {
-  constructor({ url, cfg, logger, onFrame, onReady, onClose, retry }) {
-    this.url = url;
-    this.cfg = cfg;
-    this.logger = logger;
-    this.onFrame = onFrame;
-    this.onReady = onReady;
-    this.onClose = onClose;
-    this.retry = retry;
-    this.ws = null;
-    this.ready = false;
-    this.closing = false;
-    this.backoffMs = retry.baseMs;
-    this.attempts = 0;
-    this.reconnectTimer = null;
-    this.pingTimer = null;
-    this.lastSeenAt = 0;
-    this.connectNonce = null;
-    this.connectSent = false;
-    this.identity = loadOrCreateDeviceIdentity();
-  }
 
-  start() {
-    this.closing = false;
-    this._connect();
-  }
-
-  stop() {
-    this.closing = true;
-    this.ready = false;
-    this._stopPing();
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.ws) {
-      try { this.ws.close(); } catch {}
-      this.ws = null;
-    }
-  }
-
-  isReady() {
-    return this.ready;
-  }
-
-  send(frame) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.ready)
-      return false;
-    try {
-      this.ws.send(JSON.stringify(frame));
-      return true;
-    } catch (e) {
-      this.logger.warn?.(`[gateway] send failed: ${String(e)}`);
-      return false;
-    }
-  }
-
-  _connect() {
-    if (this.closing) return;
-
-    this.logger.info?.(`[gateway] connecting to ${this.url}`);
-    this.ws = new WebSocket(this.url, { handshakeTimeout: LIVENESS_TIMEOUT_MS });
-
-    this.ws.on("open", () => {
-      this._markSeen();
-      this._startPing();
-      this.connectSent = false;
-      this.connectNonce = null;
-      // Queue connect with a short delay to allow challenge to arrive first
-      setTimeout(() => {
-        if (!this.connectSent && this.ws?.readyState === WebSocket.OPEN) {
-          this._sendConnect();
-        }
-      }, 750);
-    });
-
-    this.ws.on("message", (data) => {
-      this._markSeen();
-      const raw = data.toString();
-      if (raw.trim().toLowerCase() === "ping") {
-        this._sendRaw("pong");
-        return;
-      }
-      if (raw.trim().toLowerCase() === "pong") return;
-
-      let frame;
-      try {
-        frame = JSON.parse(raw);
-      } catch {
-        this.logger.warn?.("[gateway] invalid json payload");
-        return;
-      }
-
-      // Handle connect challenge - gateway sends nonce before we send connect
-      if (frame.type === "event" && frame.event === "connect.challenge") {
-        const nonce = typeof frame.payload?.nonce === "string" ? frame.payload.nonce : undefined;
-        if (nonce) this.connectNonce = nonce;
-        this._sendConnect();
-        return;
-      }
-
-      // Handle handshake response
-      if (frame.type === "res" && frame.id === "connect") {
-        if (frame.ok === false) {
-          const msg = frame.error?.message ?? "handshake failed";
-          this.logger.error?.(`[gateway] handshake rejected: ${msg}`);
-          this.ws?.close(1008, "handshake rejected");
-          return;
-        }
-        this.ready = true;
-        this.backoffMs = this.retry.baseMs;
-        this.attempts = 0;
-        this.logger.info?.("[gateway] handshake complete");
-        this.onReady?.();
-        return;
-      }
-
-      // Forward all other frames
-      if (this.ready) {
-        this.onFrame?.(frame);
-      }
-    });
-
-    this.ws.on("close", (code, reason) => {
-      this.ready = false;
-      this._stopPing();
-      this.logger.warn?.(`[gateway] closed code=${code} reason=${reason.toString()}`);
-      this.onClose?.();
-      this._scheduleReconnect();
-    });
-
-    this.ws.on("error", (err) => {
-      this.logger.warn?.(`[gateway] error: ${String(err)}`);
-    });
-  }
-
-  _sendConnect() {
-    if (this.connectSent || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.connectSent = true;
-
-    const role = "operator";
-    const scopes = ["operator.admin"];
-    const connectFrame = {
-      type: "req",
-      id: "connect",
-      method: "connect",
-      params: {
-        minProtocol: this.cfg.gateway.protocol,
-        maxProtocol: this.cfg.gateway.protocol,
-        client: {
-          id: this.cfg.gateway.clientId,
-          version: PLUGIN_VERSION,
-          platform: process.platform,
-          mode: this.cfg.gateway.clientMode,
-          displayName: "astron-bridge-connector",
-        },
-        role,
-        scopes,
-        caps: ["tool-events"],
-        ...(this.cfg.gateway.token ? { auth: { token: this.cfg.gateway.token } } : {}),
-        device: buildDeviceAuthField({
-          identity: this.identity,
-          clientId: this.cfg.gateway.clientId,
-          clientMode: this.cfg.gateway.clientMode,
-          role,
-          scopes,
-          token: this.cfg.gateway.token ?? undefined,
-          nonce: this.connectNonce ?? undefined,
-        }),
-      },
-    };
-    this._sendRaw(JSON.stringify(connectFrame));
-  }
-
-  _sendRaw(data) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
-    try {
-      this.ws.send(data);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  _markSeen() {
-    this.lastSeenAt = Date.now();
-  }
-
-  _startPing() {
-    this._stopPing();
-    this.pingTimer = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        try { this.ws.ping(); } catch {}
-      }
-    }, LIVENESS_PING_INTERVAL_MS);
-    this.pingTimer.unref?.();
-  }
-
-  _stopPing() {
-    if (this.pingTimer) {
-      clearInterval(this.pingTimer);
-      this.pingTimer = null;
-    }
-  }
-
-  _scheduleReconnect() {
-    if (this.closing) return;
-    if (this.retry.maxAttempts > 0 && this.attempts >= this.retry.maxAttempts) {
-      this.logger.error?.("[gateway] retry limit reached, giving up");
-      return;
-    }
-    const delay = Math.min(this.backoffMs, this.retry.maxMs);
-    this.attempts += 1;
-    this.backoffMs = Math.min(2 * this.backoffMs, this.retry.maxMs);
-    this.logger.info?.(`[gateway] reconnecting in ${delay}ms (attempt ${this.attempts})`);
-    this.reconnectTimer = setTimeout(() => this._connect(), delay);
-    this.reconnectTimer.unref?.();
+function getBridgeHttpBaseUrl(wsUrl) {
+  // Convert ws(s)://host:port/path to http(s)://host:port
+  try {
+    const url = new URL(wsUrl);
+    const protocol = url.protocol === "wss:" ? "https:" : "http:";
+    return `${protocol}//${url.host}`;
+  } catch {
+    return "http://localhost:8765";
   }
 }
 
+async function downloadMediaFromBridge(account, mediaId) {
+  const baseUrl = getBridgeHttpBaseUrl(account.bridge.url);
+  const url = `${baseUrl}/api/media/download/${encodeURIComponent(mediaId)}`;
+
+  const headers = {};
+  if (account.bridge.token) {
+    headers["Authorization"] = `Bearer ${account.bridge.token}`;
+  }
+
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    throw new Error(`Media download failed: ${res.status} ${res.statusText}`);
+  }
+
+  const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+  const disposition = res.headers.get("content-disposition") ?? "";
+  let fileName = `media_${mediaId}`;
+  const match = disposition.match(/filename[*]?=(?:UTF-8''|"?)([^";]+)/i);
+  if (match) fileName = decodeURIComponent(match[1]);
+
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return { buffer, contentType, fileName };
+}
+
+async function uploadMediaToBridge(account, buffer, fileName, contentType) {
+  const baseUrl = getBridgeHttpBaseUrl(account.bridge.url);
+  const url = `${baseUrl}/api/media/upload`;
+
+  const boundary = `----AstronClawBoundary${randomUUID().replace(/-/g, "")}`;
+  const CRLF = "\r\n";
+
+  // Build multipart body manually to avoid external dependency
+  const parts = [];
+  parts.push(`--${boundary}${CRLF}`);
+  parts.push(`Content-Disposition: form-data; name="file"; filename="${fileName}"${CRLF}`);
+  parts.push(`Content-Type: ${contentType}${CRLF}`);
+  parts.push(CRLF);
+
+  const header = Buffer.from(parts.join(""), "utf8");
+  const footer = Buffer.from(`${CRLF}--${boundary}--${CRLF}`, "utf8");
+  const body = Buffer.concat([header, buffer, footer]);
+
+  const headers = {
+    "Content-Type": `multipart/form-data; boundary=${boundary}`,
+  };
+  if (account.bridge.token) {
+    headers["Authorization"] = `Bearer ${account.bridge.token}`;
+  }
+
+  const res = await fetch(url, { method: "POST", headers, body });
+  if (!res.ok) {
+    throw new Error(`Media upload failed: ${res.status} ${res.statusText}`);
+  }
+
+  const result = await res.json();
+  return result; // { mediaId, url, type }
+}
+
 // ---------------------------------------------------------------------------
-// Bridge WebSocket client (connection to Astron server)
+// Infer media type from MIME
+// ---------------------------------------------------------------------------
+function inferMediaType(mimeType) {
+  if (!mimeType) return "file";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("audio/")) return "audio";
+  if (mimeType.startsWith("video/")) return "video";
+  return "file";
+}
+
+// ---------------------------------------------------------------------------
+// Message Handlers (Strategy Pattern)
+// ---------------------------------------------------------------------------
+
+// Each handler: { canHandle, getPreview, validate, handle }
+// handle returns: { text, media? }
+// media: { items: MediaItem[], primary?: MediaItem }
+
+const textMessageHandler = {
+  canHandle: (data) => data.msgType === "text",
+  getPreview: (data) => {
+    const text = data.text ?? data.content?.text ?? "";
+    return text.length > 50 ? text.slice(0, 50) + "..." : text;
+  },
+  validate: (data) => {
+    const text = data.text ?? data.content?.text;
+    if (!text || typeof text !== "string" || !text.trim()) {
+      return { valid: false, errorMessage: "Empty text message" };
+    }
+    return { valid: true };
+  },
+  handle: async (data, _account) => {
+    const text = data.text ?? data.content?.text ?? "";
+    return { text: text.trim() };
+  },
+};
+
+const imageMessageHandler = {
+  canHandle: (data) => data.msgType === "image" || data.msgType === "picture",
+  getPreview: (data) => "[Image]",
+  validate: (data) => {
+    const mediaId = data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+    if (!mediaId) {
+      return { valid: false, errorMessage: "No media ID for image" };
+    }
+    return { valid: true };
+  },
+  handle: async (data, account) => {
+    const mediaId = data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+    const { buffer, contentType, fileName } = await downloadMediaFromBridge(account, mediaId);
+
+    const rt = getRuntime();
+    let savedPath = null;
+    if (rt?.media?.saveMediaLocally) {
+      savedPath = await rt.media.saveMediaLocally(buffer, { contentType, fileName });
+    } else {
+      // Fallback: save to temp directory
+      const dir = join(tmpdir(), "astron-claw-media");
+      mkdirSync(dir, { recursive: true });
+      savedPath = join(dir, `${randomUUID()}_${fileName}`);
+      writeFileSync(savedPath, buffer);
+    }
+
+    const mediaItem = {
+      path: savedPath,
+      contentType,
+      fileName,
+      size: buffer.length,
+    };
+
+    const text = data.text ?? data.content?.text ?? "";
+    return {
+      text: text || "[Image]",
+      media: { items: [mediaItem], primary: mediaItem },
+    };
+  },
+};
+
+const audioMessageHandler = {
+  canHandle: (data) => data.msgType === "audio" || data.msgType === "voice",
+  getPreview: (data) => {
+    const duration = data.content?.duration;
+    return duration ? `[Audio ${duration}s]` : "[Audio]";
+  },
+  validate: (data) => {
+    const mediaId = data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+    if (!mediaId) {
+      return { valid: false, errorMessage: "No media ID for audio" };
+    }
+    return { valid: true };
+  },
+  handle: async (data, account) => {
+    const mediaId = data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+    const { buffer, contentType, fileName } = await downloadMediaFromBridge(account, mediaId);
+
+    const rt = getRuntime();
+    let savedPath = null;
+    if (rt?.media?.saveMediaLocally) {
+      savedPath = await rt.media.saveMediaLocally(buffer, { contentType, fileName });
+    } else {
+      const dir = join(tmpdir(), "astron-claw-media");
+      mkdirSync(dir, { recursive: true });
+      savedPath = join(dir, `${randomUUID()}_${fileName}`);
+      writeFileSync(savedPath, buffer);
+    }
+
+    const duration = data.content?.duration ?? null;
+    const transcript = data.content?.recognition ?? data.content?.transcript ?? null;
+
+    const mediaItem = {
+      path: savedPath,
+      contentType,
+      fileName,
+      size: buffer.length,
+      duration,
+    };
+
+    let text = data.text ?? "";
+    if (transcript) text = transcript;
+    if (!text) text = "[Audio]";
+
+    return {
+      text,
+      media: { items: [mediaItem], primary: mediaItem },
+      extra: { duration, transcript },
+    };
+  },
+};
+
+const videoMessageHandler = {
+  canHandle: (data) => data.msgType === "video",
+  getPreview: (data) => {
+    const duration = data.content?.duration;
+    return duration ? `[Video ${duration}s]` : "[Video]";
+  },
+  validate: (data) => {
+    const mediaId = data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+    if (!mediaId) {
+      return { valid: false, errorMessage: "No media ID for video" };
+    }
+    return { valid: true };
+  },
+  handle: async (data, account) => {
+    const mediaId = data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+    const { buffer, contentType, fileName } = await downloadMediaFromBridge(account, mediaId);
+
+    const rt = getRuntime();
+    let savedPath = null;
+    if (rt?.media?.saveMediaLocally) {
+      savedPath = await rt.media.saveMediaLocally(buffer, { contentType, fileName });
+    } else {
+      const dir = join(tmpdir(), "astron-claw-media");
+      mkdirSync(dir, { recursive: true });
+      savedPath = join(dir, `${randomUUID()}_${fileName}`);
+      writeFileSync(savedPath, buffer);
+    }
+
+    const duration = data.content?.duration ?? null;
+
+    const mediaItem = {
+      path: savedPath,
+      contentType,
+      fileName,
+      size: buffer.length,
+      duration,
+    };
+
+    const text = data.text ?? "[Video]";
+    return {
+      text,
+      media: { items: [mediaItem], primary: mediaItem },
+      extra: { duration },
+    };
+  },
+};
+
+const fileMessageHandler = {
+  canHandle: (data) => data.msgType === "file",
+  getPreview: (data) => {
+    const name = data.content?.fileName ?? data.content?.name ?? "file";
+    return `[File: ${name}]`;
+  },
+  validate: (data) => {
+    const mediaId = data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+    if (!mediaId) {
+      return { valid: false, errorMessage: "No media ID for file" };
+    }
+    return { valid: true };
+  },
+  handle: async (data, account) => {
+    const mediaId = data.content?.mediaId ?? data.content?.downloadCode ?? data.mediaId;
+    const { buffer, contentType, fileName } = await downloadMediaFromBridge(account, mediaId);
+
+    const rt = getRuntime();
+    const realFileName = data.content?.fileName ?? data.content?.name ?? fileName;
+    let savedPath = null;
+    if (rt?.media?.saveMediaLocally) {
+      savedPath = await rt.media.saveMediaLocally(buffer, { contentType, fileName: realFileName });
+    } else {
+      const dir = join(tmpdir(), "astron-claw-media");
+      mkdirSync(dir, { recursive: true });
+      savedPath = join(dir, `${randomUUID()}_${realFileName}`);
+      writeFileSync(savedPath, buffer);
+    }
+
+    const fileSize = data.content?.fileSize ?? data.content?.size ?? buffer.length;
+
+    const mediaItem = {
+      path: savedPath,
+      contentType,
+      fileName: realFileName,
+      size: fileSize,
+    };
+
+    const text = data.text ?? `[File: ${realFileName}]`;
+    return {
+      text,
+      media: { items: [mediaItem], primary: mediaItem },
+      extra: { fileName: realFileName, fileSize },
+    };
+  },
+};
+
+const unsupportedMessageHandler = {
+  canHandle: () => true, // catch-all
+  getPreview: (data) => `[Unsupported: ${data.msgType ?? "unknown"}]`,
+  validate: () => ({ valid: true }),
+  handle: async (data) => {
+    return { text: `[Unsupported message type: ${data.msgType ?? "unknown"}]` };
+  },
+};
+
+const messageHandlers = [
+  textMessageHandler,
+  imageMessageHandler,
+  audioMessageHandler,
+  videoMessageHandler,
+  fileMessageHandler,
+  unsupportedMessageHandler,
+];
+
+function findHandler(data) {
+  return messageHandlers.find((h) => h.canHandle(data)) ?? unsupportedMessageHandler;
+}
+
+// ---------------------------------------------------------------------------
+// Bridge WebSocket client (transport layer - like DingTalk's Stream WebSocket)
 // ---------------------------------------------------------------------------
 class BridgeClient {
-  constructor({ url, token, logger, onMessage, onReady, onClose, retry }) {
+  constructor({ url, token, logger: log, onMessage, onReady, onClose, retry }) {
     this.url = url;
     this.token = token;
-    this.logger = logger;
+    this.log = log;
     this.onMessage = onMessage;
     this.onReady = onReady;
     this.onClose = onClose;
@@ -414,7 +518,7 @@ class BridgeClient {
       this.ws.send(JSON.stringify(msg));
       return true;
     } catch (e) {
-      this.logger.warn?.(`[bridge] send failed: ${String(e)}`);
+      this.log.warn?.(`[bridge] send failed: ${String(e)}`);
       return false;
     }
   }
@@ -427,11 +531,8 @@ class BridgeClient {
       headers["X-Astron-Bot-Token"] = this.token;
     }
 
-    this.logger.info?.(`[bridge] connecting to ${this.url}`);
-    this.ws = new WebSocket(this.url, {
-      headers,
-      handshakeTimeout: LIVENESS_TIMEOUT_MS,
-    });
+    this.log.info?.(`[bridge] connecting to ${this.url}`);
+    this.ws = new WebSocket(this.url, { headers, handshakeTimeout: LIVENESS_TIMEOUT_MS });
 
     this.ws.on("open", () => {
       this.ready = true;
@@ -439,7 +540,7 @@ class BridgeClient {
       this._startPing();
       this.backoffMs = this.retry.baseMs;
       this.attempts = 0;
-      this.logger.info?.("[bridge] connected");
+      this.log.info?.("[bridge] connected");
       this.onReady?.();
     });
 
@@ -456,7 +557,7 @@ class BridgeClient {
       try {
         msg = JSON.parse(raw);
       } catch {
-        this.logger.warn?.("[bridge] invalid json payload");
+        this.log.warn?.("[bridge] invalid json payload");
         return;
       }
       this.onMessage?.(msg);
@@ -465,7 +566,7 @@ class BridgeClient {
     this.ws.on("close", (code, reason) => {
       this.ready = false;
       this._stopPing();
-      this.logger.warn?.(`[bridge] closed code=${code} reason=${reason.toString()}`);
+      this.log.warn?.(`[bridge] closed code=${code} reason=${reason.toString()}`);
       this.onClose?.();
       if (code === 4001) {
         this._markAuthFailed("4001");
@@ -480,12 +581,12 @@ class BridgeClient {
         this._markAuthFailed("http 401");
         return;
       }
-      this.logger.warn?.(`[bridge] unexpected http response status=${status}`);
+      this.log.warn?.(`[bridge] unexpected http response status=${status}`);
       this._scheduleReconnect();
     });
 
     this.ws.on("error", (err) => {
-      this.logger.warn?.(`[bridge] error: ${String(err)}`);
+      this.log.warn?.(`[bridge] error: ${String(err)}`);
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("401")) {
         this._markAuthFailed("http 401");
@@ -533,577 +634,1027 @@ class BridgeClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.logger.error?.(`[bridge] auth failed (${reason}), will not retry`);
+    this.log.error?.(`[bridge] auth failed (${reason}), will not retry`);
   }
 
   _scheduleReconnect() {
     if (this.closing || this.authFailed) return;
     if (this.retry.maxAttempts > 0 && this.attempts >= this.retry.maxAttempts) {
-      this.logger.error?.("[bridge] retry limit reached, giving up");
+      this.log.error?.("[bridge] retry limit reached, giving up");
       return;
     }
     const delay = Math.min(this.backoffMs, this.retry.maxMs);
     this.attempts += 1;
     this.backoffMs = Math.min(2 * this.backoffMs, this.retry.maxMs);
-    this.logger.info?.(`[bridge] reconnecting in ${delay}ms (attempt ${this.attempts})`);
+    this.log.info?.(`[bridge] reconnecting in ${delay}ms (attempt ${this.attempts})`);
     this.reconnectTimer = setTimeout(() => this._connect(), delay);
     this.reconnectTimer.unref?.();
   }
 }
 
 // ---------------------------------------------------------------------------
-// ACP Bridge Core - handles JSON-RPC methods from the Astron server
+// Bridge Monitor - inbound message processing (like DingTalk's monitor.ts)
 // ---------------------------------------------------------------------------
-class AcpBridgeCore {
-  constructor({ logger, cfg, isGatewayReady, sendGatewayFrame, sendBridgeMessage }) {
-    this.logger = logger;
-    this.cfg = cfg;
-    this.isGatewayReady = isGatewayReady;
-    this.sendGatewayFrame = sendGatewayFrame;
-    this.sendBridgeMessage = sendBridgeMessage;
-    // Maps gateway request IDs to { rpcId, sessionId, done }
-    this.inFlightPrompts = new Map();
+
+async function handleInboundMessage(msg, account, bridgeClient) {
+  const rt = getRuntime();
+  if (!rt) {
+    logger.error("No runtime available, dropping inbound message");
+    return;
   }
 
-  // Called when a JSON-RPC message arrives from the bridge
-  handleBridgeMessage(msg) {
-    if (!msg || typeof msg !== "object") return;
-    const method = typeof msg.method === "string" ? msg.method.trim() : null;
-    if (!method) return;
+  // Bridge server sends JSON-RPC requests (session/prompt) from chat clients
+  if (msg.jsonrpc === "2.0" && msg.method === "session/prompt") {
+    await handleJsonRpcPrompt(msg, account, bridgeClient);
+    return;
+  }
 
-    const id = msg.id;
+  // Also handle direct message format (for future extensibility)
+  if (msg && msg.type === "message") {
+    await handleDirectMessage(msg, account, bridgeClient);
+    return;
+  }
 
-    switch (method) {
-      case "initialize":
-        if (id !== undefined) this._handleInitialize(id, msg.params);
-        break;
-      case "session/new":
-        if (id !== undefined) this._handleSessionNew(id, msg.params);
-        break;
-      case "session/prompt":
-        if (id !== undefined) this._handleSessionPrompt(id, msg.params);
-        break;
-      case "session/cancel":
-        this._handleSessionCancel(id, msg.params);
-        break;
-      default:
-        if (id !== undefined) {
-          this._sendError(id, -32601, `method not found: ${method}`);
-        }
+  // Unknown message format
+  logger.warn(`Unknown message format: ${JSON.stringify(msg).slice(0, 200)}`);
+}
+
+async function handleJsonRpcPrompt(rpcMsg, account, bridgeClient) {
+  const rt = getRuntime();
+  if (!rt) return;
+
+  const requestId = rpcMsg.id;
+  const params = rpcMsg.params ?? {};
+  const sessionId = params.sessionId ?? "default";
+  const prompt = params.prompt ?? {};
+  const contentItems = prompt.content ?? [];
+
+  // Extract text and media from content items
+  let textParts = [];
+  let mediaItems = [];
+  for (const item of contentItems) {
+    if (item.type === "text" && item.text) {
+      textParts.push(item.text);
+    } else if (item.type === "media" && item.media) {
+      mediaItems.push(item);
     }
   }
 
-  // Called when a frame arrives from the local gateway
-  handleGatewayFrame(frame) {
-    if (!frame || typeof frame !== "object") return;
+  const messageText = textParts.join("\n");
+  if (!messageText && mediaItems.length === 0) {
+    logger.warn("Empty prompt received (no text or media), ignoring");
+    return;
+  }
 
-    // Gateway response to our request
-    if (frame.type === "res") {
-      const prompt = this.inFlightPrompts.get(frame.id);
-      if (prompt && !prompt.done) {
-        if (frame.ok === false) {
-          const errMsg = frame.error?.message ?? "gateway returned error";
-          this._failPrompt(prompt, -32020, errMsg, frame.error);
-        }
+  // Download media from bridge and save locally
+  let mediaPath = null;
+  let mediaType = null;
+  let mediaUrl = null;
+  if (mediaItems.length > 0) {
+    const firstMedia = mediaItems[0];
+    const mediaInfo = firstMedia.media;
+    const mediaId = mediaInfo.mediaId;
+    if (mediaId) {
+      try {
+        const { buffer, contentType: ct, fileName } = await downloadMediaFromBridge(account, mediaId);
+        const dir = join(tmpdir(), "astron-claw-media");
+        mkdirSync(dir, { recursive: true });
+        const savedPath = join(dir, `${randomUUID()}_${fileName}`);
+        writeFileSync(savedPath, buffer);
+        mediaPath = savedPath;
+        mediaType = ct;
+        mediaUrl = savedPath;
+        logger.info(`Downloaded media ${mediaId} -> ${savedPath} (${ct})`);
+      } catch (err) {
+        logger.error(`Failed to download media ${mediaId}: ${String(err)}`);
       }
-      return;
-    }
-
-    // Gateway events
-    if (frame.type === "event") {
-      this._handleGatewayEvent(frame);
     }
   }
 
-  // Called when the gateway disconnects
-  handleGatewayDisconnected() {
-    for (const [, prompt] of this.inFlightPrompts) {
-      if (!prompt.done) {
-        this._failPrompt(prompt, -32001, "gateway disconnected");
-      }
-    }
+  const senderId = sessionId;
+  const senderName = "User";
+  const fromAddress = `${PLUGIN_ID}:user:${senderId}`;
+  const toAddress = `${PLUGIN_ID}:user:${senderId}`;
+  const peerId = senderId;
+
+  // For media-only messages, use a placeholder text so the message isn't dropped
+  const effectiveText = messageText || (mediaPath ? "[Image]" : "");
+  if (!effectiveText) {
+    logger.warn("Empty prompt received (no text, no media), ignoring");
+    return;
   }
 
-  // ---- JSON-RPC method handlers ----
+  logger.info(`Inbound prompt from session ${sessionId}: ${effectiveText.slice(0, 100)}${mediaPath ? " [+media]" : ""}`);
+  recordChannelRuntimeState(account.accountId, { lastInboundAt: Date.now() });
 
-  _handleInitialize(id, params) {
-    this._sendResult(id, {
-      protocolVersion: 1,
-      agentCapabilities: {
-        loadSession: false,
-        promptCapabilities: {
-          embeddedContext: true,
-          image: false,
-          audio: false,
-        },
-      },
-      agentInfo: {
-        name: PLUGIN_ID,
-        version: PLUGIN_VERSION,
-      },
+  // Resolve route via runtime SDK (same as DingTalk)
+  let route;
+  try {
+    route = rt.channel?.routing?.resolveAgentRoute?.({
+      cfg: rt.config?.loadConfig?.() ?? {},
+      channel: PLUGIN_ID,
+      accountId: account.accountId,
+      peer: { kind: "dm", id: peerId },
     });
+  } catch {
+    route = { sessionKey: `${PLUGIN_ID}:${peerId}` };
   }
 
-  _handleSessionNew(id, params) {
-    const sessionId = (params && params.sessionId) || MAIN_SESSION_KEY;
-    this._sendResult(id, {
-      sessionId,
-      modes: {
-        availableModes: [{ id: "default", name: "Default", description: "Default agent mode" }],
-        currentModeId: "default",
-      },
-    }, sessionId);
+  const sessionKey = route?.sessionKey ?? `${PLUGIN_ID}:${peerId}`;
+
+  // Build envelope body (same as DingTalk's formatInboundEnvelope)
+  let body = effectiveText;
+  try {
+    const cfg = rt.config?.loadConfig?.() ?? {};
+    const envelopeOpts = rt.channel?.reply?.resolveEnvelopeFormatOptions?.(cfg);
+    const formatted = rt.channel?.reply?.formatInboundEnvelope?.({
+      channel: "AstronClaw",
+      from: senderName,
+      timestamp: Date.now(),
+      body: effectiveText,
+      chatType: "direct",
+      sender: { id: senderId, name: senderName },
+      envelope: envelopeOpts,
+    });
+    if (formatted) body = formatted;
+  } catch {
+    // Use raw text as fallback
   }
 
-  _handleSessionPrompt(id, params) {
-    if (!params || typeof params !== "object") {
-      this._sendError(id, -32602, "invalid params");
-      return;
-    }
+  // Build MsgContext (same structure as DingTalk's buildInboundContext)
+  const ctx = {
+    Body: body,
+    RawBody: effectiveText,
+    CommandBody: effectiveText,
+    From: fromAddress,
+    To: toAddress,
+    SessionKey: sessionKey,
+    AccountId: account.accountId,
+    ChatType: "direct",
+    ConversationLabel: senderName,
+    SenderId: senderId,
+    SenderName: senderName,
+    Provider: PLUGIN_ID,
+    Surface: PLUGIN_ID,
+    MessageSid: requestId ?? randomUUID(),
+    Timestamp: Date.now(),
+    WasMentioned: true, // In DM, always treat as mentioned
+    OriginatingChannel: PLUGIN_ID,
+    OriginatingTo: toAddress,
+    CommandAuthorized: true,
+    // Media fields (same as Matrix/Zalo pattern)
+    MediaPath: mediaPath ?? undefined,
+    MediaType: mediaType ?? undefined,
+    MediaUrl: mediaUrl ?? undefined,
+  };
 
-    const sessionId = (params && params.sessionId) || MAIN_SESSION_KEY;
+  // Token-level streaming state (following adp-openclaw pattern)
+  let lastPartialText = "";
+  let chunkCount = 0;
+  let finalSent = false;
 
-    if (!this.isGatewayReady()) {
-      this._sendError(id, -32001, "gateway unavailable");
-      return;
-    }
-
-    // Build the prompt text from params
-    const promptText = this._extractPromptText(params);
-    if (!promptText) {
-      this._sendError(id, -32602, "prompt text is required");
-      return;
-    }
-
-    const gatewayRequestId = `req_${randomUUID().replace(/-/g, "")}`;
-    const idempotencyKey = `astron_${sessionId}_${Date.now()}`;
-
-    const gatewayFrame = {
-      type: "req",
-      id: gatewayRequestId,
-      method: "agent",
-      params: {
-        agentId: this.cfg.gateway.agentId,
-        sessionKey: sessionId,
-        message: `User Message From Astron:\n${promptText}`,
-        deliver: false,
-        idempotencyKey,
-      },
-    };
-
-    if (!this.sendGatewayFrame(gatewayFrame)) {
-      this._sendError(id, -32001, "failed to send prompt to gateway");
-      return;
-    }
-
-    // Send initial empty chunk so the bridge knows streaming started
-    this._sendSessionUpdate(sessionId, {
-      sessionUpdate: "agent_message_chunk",
-      content: { type: "text", text: "" },
-    }, id);
-
-    // Track the in-flight prompt
-    const prompt = {
-      rpcId: id,
-      sessionId,
-      gatewayRequestId,
-      done: false,
-    };
-    this.inFlightPrompts.set(gatewayRequestId, prompt);
-  }
-
-  _handleSessionCancel(id, params) {
-    if (!params || typeof params !== "object") {
-      if (id !== undefined) this._sendError(id, -32602, "invalid params");
-      return;
-    }
-
-    const targetSessionId = (params && params.sessionId) || MAIN_SESSION_KEY;
-
-    // Find the active prompt and cancel it
-    for (const [, prompt] of this.inFlightPrompts) {
-      if (!prompt.done && prompt.sessionId === targetSessionId) {
-        // Send cancel to gateway
-        const cancelFrame = {
-          type: "req",
-          id: `cancel_${prompt.gatewayRequestId}`,
-          method: "agent.cancel",
-          params: {
-            sessionKey: prompt.sessionId,
-            requestId: prompt.gatewayRequestId,
-          },
-        };
-        this.sendGatewayFrame(cancelFrame);
-        this._completePrompt(prompt, "cancelled");
-        break;
-      }
-    }
-
-    if (id !== undefined) {
-      this._sendResult(id, {}, targetSessionId);
-    }
-  }
-
-  // ---- Gateway event handling ----
-
-  _handleGatewayEvent(frame) {
-    const event = typeof frame.event === "string" ? frame.event : null;
-    if (!event) return;
-
-    if (event === "agent" || event === "event.agent") {
-      this._handleAgentEvent(frame.payload ?? frame.data ?? frame);
-    }
-  }
-
-  _handleAgentEvent(payload) {
-    if (!payload || typeof payload !== "object") return;
-
-    const stream = typeof payload.stream === "string" ? payload.stream : null;
-    const data = payload.data && typeof payload.data === "object" ? payload.data : {};
-    const runId = typeof payload.runId === "string" ? payload.runId : undefined;
-    const requestId = typeof payload.requestId === "string" ? payload.requestId : undefined;
-
-    // Resolve the prompt this event belongs to
-    const prompt = this._resolvePrompt(payload);
-    if (!prompt || prompt.done) return;
-
-    if (stream === "assistant") {
-      const text =
-        this._asTextChunk(data.delta) ?? this._asTextChunk(data.text);
-      if (text) {
-        this._sendSessionUpdate(prompt.sessionId, {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text },
-        }, prompt.rpcId);
-      }
-
-      // Handle content array blocks
-      const blocks = Array.isArray(data.content) ? data.content
-        : (data.content && typeof data.content === "object") ? [data.content]
-        : (typeof data.type === "string") ? [data]
-        : [];
-
-      for (const block of blocks) {
-        if (!block || typeof block !== "object") continue;
-        const type = typeof block.type === "string" ? block.type : null;
-
-        if (type === "thinking") {
-          const thinkText = this._normalizeText(block.thinking) ?? this._normalizeText(block.text);
-          if (thinkText) {
-            this._sendSessionUpdate(prompt.sessionId, {
-              sessionUpdate: "agent_thought_chunk",
-              content: { type: "text", text: thinkText },
-            }, prompt.rpcId);
-          }
-        } else if (type === "toolCall") {
-          const toolCallId = this._readToolCallId(block) ?? `tc_${prompt.gatewayRequestId}_${Date.now()}`;
-          const name = typeof block.name === "string" ? block.name : "tool";
-          const args = block.arguments ?? block.args ?? {};
-          this._sendSessionUpdate(prompt.sessionId, {
-            sessionUpdate: "tool_call",
-            toolCallId,
-            title: name,
-            status: "in_progress",
-            content: [{ type: "content", content: { type: "text", text: JSON.stringify(args, null, 2) } }],
-          }, prompt.rpcId);
-        }
-      }
-      return;
-    }
-
-    if (stream === "thinking") {
-      const text =
-        this._asTextChunk(data.delta) ?? this._asTextChunk(data.text);
-      if (text) {
-        this._sendSessionUpdate(prompt.sessionId, {
-          sessionUpdate: "agent_thought_chunk",
-          content: { type: "text", text },
-        }, prompt.rpcId);
-      }
-      return;
-    }
-
-    if (stream === "tool") {
-      const phase = typeof data.phase === "string" ? data.phase : null;
-      const toolCallId = this._readToolCallId(data) ?? `tc_${prompt.gatewayRequestId}_${Date.now()}`;
-      const toolName = typeof data.name === "string" ? data.name : "tool";
-
-      if (phase === "start") {
-        const args = data.arguments ?? data.args ?? {};
-        this._sendSessionUpdate(prompt.sessionId, {
-          sessionUpdate: "tool_call",
-          toolCallId,
-          title: toolName,
-          status: "in_progress",
-          content: [{ type: "content", content: { type: "text", text: JSON.stringify(args, null, 2) } }],
-        }, prompt.rpcId);
-      }
-      return;
-    }
-
-    if (stream === "lifecycle") {
-      const phase = typeof data.phase === "string" ? data.phase : null;
-      if (phase === "end") {
-        this._completePrompt(prompt, "end_turn");
-      } else if (phase === "cancelled" || phase === "cancel") {
-        this._completePrompt(prompt, "cancelled");
-      } else if (phase === "error") {
-        const errMsg = typeof data.message === "string" ? data.message
-          : (data.error?.message ?? "gateway lifecycle error");
-        this._failPrompt(prompt, -32021, errMsg, data);
-      }
-    }
-  }
-
-  _resolvePrompt(payload) {
-    // Try matching by requestId
-    const reqId = typeof payload.requestId === "string" ? payload.requestId : undefined;
-    if (reqId && this.inFlightPrompts.has(reqId)) {
-      return this.inFlightPrompts.get(reqId);
-    }
-    // Try matching by runId or nested data.requestId
-    const data = payload.data ?? {};
-    const nestedReqId = typeof data.requestId === "string" ? data.requestId : undefined;
-    if (nestedReqId && this.inFlightPrompts.has(nestedReqId)) {
-      return this.inFlightPrompts.get(nestedReqId);
-    }
-    // Fallback: return any in-flight prompt
-    for (const [, p] of this.inFlightPrompts) {
-      if (!p.done) return p;
-    }
-    return null;
-  }
-
-  // ---- Transport helpers ----
-
-  _sendSessionUpdate(sessionId, update, requestId) {
-    const notification = {
+  // Helper: send a chunk to the bridge
+  const sendChunk = (text) => {
+    if (!text) return;
+    bridgeClient.send({
       jsonrpc: "2.0",
       method: "session/update",
       params: {
         sessionId,
-        update,
-        _meta: {
-          ...(requestId !== undefined ? { requestId } : {}),
-          messageType: "normal",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text },
         },
       },
-    };
-    this.sendBridgeMessage(notification);
-  }
+    });
+    chunkCount++;
+  };
 
-  _sendResult(id, result, sessionId) {
-    const msg = {
-      jsonrpc: "2.0",
-      id,
-      result: {
-        ...result,
-        _meta: {
-          requestId: id,
-          ...(sessionId ? { sessionId } : {}),
+  // Helper: send final completion to the bridge
+  const sendFinal = (text) => {
+    if (finalSent) return;
+    finalSent = true;
+    if (text) {
+      bridgeClient.send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_final",
+            content: { type: "text", text },
+          },
         },
-      },
-    };
-    this.sendBridgeMessage(msg);
-  }
+      });
+    }
+  };
 
-  _sendError(id, code, message, data) {
-    const msg = {
+  // Build dispatcher options (following adp-openclaw pattern):
+  // - onPartialReply handles real-time token-level streaming
+  // - deliver ignores "block" (already sent via onPartialReply) and only handles "final"
+  const dispatcherOptions = {
+    deliver: async (payload, info) => {
+      const kind = info?.kind;
+      const text = payload?.text ?? "";
+
+      logger.info(`deliver called: kind=${kind}, info=${JSON.stringify(info)}, payload_keys=${Object.keys(payload || {})}, text_len=${text.length}, text_preview=${text.slice(0, 200)}`);
+
+      try {
+        if (kind === "block") {
+          // Ignore — onPartialReply already sent deltas in real-time
+          return;
+        }
+        if (kind === "tool") {
+          // Tool result
+          bridgeClient.send({
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "tool_result",
+                content: { type: "text", text },
+              },
+            },
+          });
+          return;
+        }
+        // "final" or undefined — send completion
+        if (kind === "final" || kind === undefined) {
+          sendFinal(text || lastPartialText);
+        }
+      } catch (sendErr) {
+        logger.error(`deliver send error: ${String(sendErr)}`);
+      }
+
+      recordChannelRuntimeState(account.accountId, { lastOutboundAt: Date.now() });
+    },
+    onError: (err, info) => {
+      logger.error(`Reply delivery error (${info?.kind}): ${String(err)}`);
+    },
+  };
+
+  // Dispatch through the OpenClaw SDK using onPartialReply for token-level streaming.
+  // onPartialReply receives cumulative text on each token; we compute the delta
+  // and send only the new portion as a chunk (same approach as adp-openclaw).
+  try {
+    const cfg = rt.config?.loadConfig?.() ?? {};
+
+    if (rt.channel?.reply?.dispatchReplyWithBufferedBlockDispatcher) {
+      const { queuedFinal } = await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+        ctx,
+        cfg,
+        dispatcherOptions,
+        replyOptions: {
+          disableBlockStreaming: false,
+          onToolStart: async ({ name, phase }) => {
+            if (phase !== "start") return;
+            bridgeClient.send({
+              jsonrpc: "2.0",
+              method: "session/update",
+              params: {
+                sessionId,
+                update: {
+                  sessionUpdate: "tool_call",
+                  title: name || "tool",
+                  status: "running",
+                  content: [],
+                },
+              },
+            });
+          },
+          onPartialReply: async (payload) => {
+            const fullText = payload?.text ?? "";
+            if (!fullText) return;
+
+            // Calculate delta (new text since last send)
+            let delta = fullText;
+            if (fullText.startsWith(lastPartialText)) {
+              delta = fullText.slice(lastPartialText.length);
+            }
+
+            if (!delta) return;
+            lastPartialText = fullText;
+
+            sendChunk(delta);
+          },
+        },
+      });
+
+      // Ensure final is sent even if SDK didn't call deliver with "final"
+      if (!finalSent && chunkCount > 0) {
+        sendFinal(lastPartialText);
+      }
+
+      if (queuedFinal) {
+        bridgeClient.send({
+          jsonrpc: "2.0",
+          id: requestId,
+          result: { stopReason: "end_turn" },
+        });
+      } else {
+        logger.warn("No response generated for inbound message");
+        bridgeClient.send({
+          jsonrpc: "2.0",
+          id: requestId,
+          result: { stopReason: "no_reply" },
+        });
+      }
+    } else {
+      logger.warn("dispatchReplyWithBufferedBlockDispatcher not available on runtime");
+      bridgeClient.send({
+        jsonrpc: "2.0",
+        id: requestId,
+        error: { code: -32000, message: "Dispatch not available" },
+      });
+    }
+  } catch (err) {
+    logger.error(`Failed to dispatch inbound message: ${String(err)}`);
+    bridgeClient.send({
       jsonrpc: "2.0",
-      id,
-      error: {
-        code,
-        message,
-        ...(data !== undefined ? { data } : {}),
-      },
-    };
-    this.sendBridgeMessage(msg);
-    this.logger.warn?.(`[acp] request failed code=${code} message=${message}`);
+      id: requestId,
+      error: { code: -32000, message: String(err) },
+    });
+  }
+}
+
+async function handleDirectMessage(msg, account, bridgeClient) {
+  // Handle direct { type: "message" } format (for future extensibility)
+  const rt = getRuntime();
+  if (!rt) return;
+
+  const senderId = msg.from?.id ?? msg.senderId ?? "unknown";
+  const senderName = msg.from?.name ?? msg.senderName ?? senderId;
+  const messageText = msg.text ?? msg.content?.text ?? "";
+
+  if (!messageText) return;
+
+  logger.info(`Inbound direct message from ${senderName}(${senderId}): ${messageText.slice(0, 100)}`);
+  recordChannelRuntimeState(account.accountId, { lastInboundAt: Date.now() });
+
+  const fromAddress = `${PLUGIN_ID}:user:${senderId}`;
+  const toAddress = `${PLUGIN_ID}:user:${senderId}`;
+
+  let route;
+  try {
+    route = rt.routing?.resolveAgentRoute?.({
+      peer: { kind: "dm", id: senderId },
+    });
+  } catch {
+    route = { agentId: "main", sessionKey: `${PLUGIN_ID}:${senderId}` };
   }
 
-  _completePrompt(prompt, stopReason) {
-    if (prompt.done) return;
-    prompt.done = true;
-    this._sendResult(prompt.rpcId, { stopReason }, prompt.sessionId);
-    this.inFlightPrompts.delete(prompt.gatewayRequestId);
-  }
+  const envelope = {
+    channelId: PLUGIN_ID,
+    accountId: account.accountId,
+    from: fromAddress,
+    to: toAddress,
+    senderDisplayName: senderName,
+    messageId: msg.id ?? randomUUID(),
+    timestamp: msg.timestamp ?? Date.now(),
+  };
 
-  _failPrompt(prompt, code, message, data) {
-    if (prompt.done) return;
-    prompt.done = true;
-    this._sendError(prompt.rpcId, code, message, data);
-    this.inFlightPrompts.delete(prompt.gatewayRequestId);
-  }
+  const inboundCtx = {
+    envelope,
+    route: route ?? { agentId: "main", sessionKey: `${PLUGIN_ID}:${senderId}` },
+    message: messageText,
+  };
 
-  _extractPromptText(params) {
-    // params.prompt can be a string or object with text/blocks
-    const prompt = params.prompt;
-    if (typeof prompt === "string") return prompt.trim() || null;
-    if (prompt && typeof prompt === "object") {
-      // Check for .text
-      if (typeof prompt.text === "string") return prompt.text.trim() || null;
-      // Check for .blocks array
-      if (Array.isArray(prompt.blocks)) {
-        const texts = [];
-        for (const block of prompt.blocks) {
-          if (typeof block === "string") texts.push(block);
-          else if (block && typeof block.text === "string") texts.push(block.text);
-        }
-        return texts.join("\n").trim() || null;
-      }
-      // Check for content array
-      if (Array.isArray(prompt.content)) {
-        const texts = [];
-        for (const c of prompt.content) {
-          if (typeof c === "string") texts.push(c);
-          else if (c && typeof c.text === "string") texts.push(c.text);
-        }
-        return texts.join("\n").trim() || null;
-      }
-    }
-    // Fallback: params.message
-    if (typeof params.message === "string") return params.message.trim() || null;
-    return null;
-  }
+  const replyDispatcher = createReplyDispatcher({ senderId, chatType: "direct" }, account, bridgeClient);
 
-  _asTextChunk(v) {
-    if (typeof v === "string" && v.length > 0) return v;
-    return null;
-  }
-
-  _normalizeText(v) {
-    if (typeof v === "string") {
-      const t = v.trim();
-      return t || null;
-    }
-    return null;
-  }
-
-  _readToolCallId(obj) {
-    return typeof obj.toolCallId === "string" ? obj.toolCallId
-      : typeof obj.tool_call_id === "string" ? obj.tool_call_id
-      : typeof obj.callId === "string" ? obj.callId
-      : typeof obj.id === "string" ? obj.id
-      : null;
+  if (rt.channels?.dispatchInbound) {
+    await rt.channels.dispatchInbound(inboundCtx, replyDispatcher);
+  } else if (rt.dispatchInbound) {
+    await rt.dispatchInbound(inboundCtx, replyDispatcher);
+  } else {
+    logger.warn("No dispatch method found on runtime, message dropped");
   }
 }
 
 // ---------------------------------------------------------------------------
-// Service factory
+// Reply Dispatcher (outbound delivery from OpenClaw engine back to user)
 // ---------------------------------------------------------------------------
-function createAstronService({ logger, pluginConfig, runtime }) {
-  let bridgeClient = null;
-  let gatewayClient = null;
-  let bridgeCore = null;
-  let stopped = true;
+function createReplyDispatcher(data, account, bridgeClient) {
+  return {
+    deliver: async (payload) => {
+      const to = data.chatType === "group" ? data.groupId : data.senderId;
+      const text = typeof payload === "string"
+        ? payload
+        : (payload?.text ?? payload?.content?.text ?? "");
 
-  function stop() {
-    stopped = true;
-    bridgeClient?.stop();
-    gatewayClient?.stop();
-    bridgeClient = null;
-    gatewayClient = null;
-    bridgeCore = null;
+      if (!text && !payload?.media) return;
+
+      bridgeClient.send({
+        type: "reply",
+        to,
+        chatType: data.chatType,
+        msgType: "text",
+        content: { text },
+        replyTo: data.raw?.id,
+      });
+
+      recordChannelRuntimeState(account.accountId, { lastOutboundAt: Date.now() });
+    },
+    onError: (err, info) => {
+      logger.error(`Reply delivery error: ${String(err)}`, info);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Normalize target address (like DingTalk's normalizeDingTalkTarget)
+// ---------------------------------------------------------------------------
+function normalizeTarget(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  const s = raw.trim();
+
+  // Strip plugin prefix
+  const prefix = `${PLUGIN_ID}:`;
+  let target = s.startsWith(prefix) ? s.slice(prefix.length) : s;
+
+  // Handle user: prefix
+  if (target.startsWith("user:")) {
+    return target.slice("user:".length);
   }
 
-  function start(serviceCtx) {
-    stop();
-    stopped = false;
+  // Handle chat: prefix - keep it
+  if (target.startsWith("chat:")) {
+    return target;
+  }
 
-    const cfg = resolveConfig(pluginConfig);
+  // Plain ID
+  return target;
+}
 
-    // Read gateway auth token from OpenClaw config
-    let gatewayToken = undefined;
-    try {
-      const openclawCfg = serviceCtx?.config ?? {};
-      gatewayToken = openclawCfg?.gateway?.auth?.token ?? openclawCfg?.gateway?.token;
-      if (!gatewayToken && runtime?.config?.loadConfig) {
-        const loaded = runtime.config.loadConfig();
-        gatewayToken = loaded?.gateway?.auth?.token ?? loaded?.gateway?.token;
-      }
-      if (!gatewayToken) {
-        // Read directly from file as fallback
-        const cfgPath = join(homedir(), ".openclaw", "openclaw.json");
-        if (existsSync(cfgPath)) {
-          const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
-          gatewayToken = raw?.gateway?.auth?.token ?? raw?.gateway?.token;
-        }
-      }
-    } catch (e) {
-      logger.warn?.(`[astron-claw] failed to read gateway token: ${String(e)}`);
-    }
-    cfg.gateway.token = gatewayToken;
+function isGroupTarget(target) {
+  return target?.startsWith("chat:");
+}
 
-    logger.info?.(`[astron-claw] starting service bridge=${cfg.bridge.url} gateway=${cfg.gateway.url}`);
+// ---------------------------------------------------------------------------
+// Outbound: sendText (from OpenClaw engine to chat client via bridge)
+// ---------------------------------------------------------------------------
+async function sendTextMessage(to, text, { account, bridgeClient }) {
+  if (!bridgeClient?.isReady()) {
+    throw new Error("Bridge not connected");
+  }
 
-    // Create the ACP bridge core
-    bridgeCore = new AcpBridgeCore({
-      logger,
-      cfg,
-      isGatewayReady: () => gatewayClient?.isReady() ?? false,
-      sendGatewayFrame: (frame) => gatewayClient?.send(frame) ?? false,
-      sendBridgeMessage: (msg) => {
-        if (!bridgeClient?.send(msg)) {
-          logger.warn?.("[astron-claw] bridge not ready; dropping message");
-        }
+  const target = normalizeTarget(to);
+  if (!target) throw new Error("Invalid target address");
+
+  // Send as JSON-RPC notification with sessionId for routing
+  bridgeClient.send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: target,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text },
       },
-    });
+    },
+  });
 
-    // Create bridge client (connects outbound to Astron server)
-    bridgeClient = new BridgeClient({
-      url: cfg.bridge.url,
-      token: cfg.bridge.token,
-      logger,
-      retry: cfg.retry,
-      onMessage: (msg) => bridgeCore?.handleBridgeMessage(msg),
-      onReady: () => logger.info?.(`[astron-claw] bridge connected url=${cfg.bridge.url}`),
-      onClose: () => logger.warn?.("[astron-claw] bridge disconnected"),
-    });
+  recordChannelRuntimeState(account.accountId, { lastOutboundAt: Date.now() });
+}
 
-    // Create gateway client (connects to local OpenClaw gateway)
-    gatewayClient = new GatewayClient({
-      url: cfg.gateway.url,
-      cfg,
-      logger,
-      retry: cfg.retry,
-      onFrame: (frame) => bridgeCore?.handleGatewayFrame(frame),
-      onReady: () => logger.info?.(`[astron-claw] gateway connected url=${cfg.gateway.url}`),
+// ---------------------------------------------------------------------------
+// Outbound: sendMedia (from OpenClaw engine to chat client via bridge)
+// ---------------------------------------------------------------------------
+async function sendMediaMessage(to, mediaUrl, options, { account, bridgeClient }) {
+  if (!bridgeClient?.isReady()) {
+    throw new Error("Bridge not connected");
+  }
+
+  const target = normalizeTarget(to);
+  if (!target) throw new Error("Invalid target address");
+
+  // Load the media using OpenClaw SDK (supports local paths, URLs, file://, ~ paths)
+  const loaded = await loadWebMedia(mediaUrl);
+  const buffer = loaded.buffer;
+  const contentType = loaded.contentType ?? options?.mimeType ?? "application/octet-stream";
+  const fileName = loaded.fileName ?? options?.fileName ?? "file";
+
+  const mediaType = inferMediaType(contentType);
+
+  // Upload to bridge server
+  let uploadResult;
+  try {
+    uploadResult = await uploadMediaToBridge(account, buffer, fileName, contentType);
+  } catch (err) {
+    // Fallback: send text with media URL
+    logger.warn(`Media upload failed, sending as link: ${String(err)}`);
+    const fallbackText = options?.text
+      ? `${options.text}\n\n${mediaUrl}`
+      : mediaUrl;
+    await sendTextMessage(to, fallbackText, { account, bridgeClient });
+    return;
+  }
+
+  // Send as JSON-RPC notification with media info
+  bridgeClient.send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "agent_media",
+        content: {
+          msgType: mediaType,
+          text: options?.text ?? "",
+          media: {
+            mediaId: uploadResult.mediaId ?? uploadResult.media_id,
+            fileName,
+            mimeType: contentType,
+            fileSize: buffer.length,
+          },
+        },
+      },
+    },
+  });
+
+  recordChannelRuntimeState(account.accountId, { lastOutboundAt: Date.now() });
+}
+
+// ---------------------------------------------------------------------------
+// Bridge connection monitor (like DingTalk's monitorDingTalkProvider)
+// ---------------------------------------------------------------------------
+function monitorBridgeProvider(account, abortSignal) {
+  return new Promise((resolve) => {
+    const bridgeClient = new BridgeClient({
+      url: account.bridge.url,
+      token: account.bridge.token,
+      logger: _logger,
+      retry: account.retry,
+      onMessage: (msg) => {
+        handleInboundMessage(msg, account, bridgeClient).catch((err) => {
+          logger.error(`Inbound message processing error: ${String(err)}`);
+        });
+      },
+      onReady: () => {
+        logger.info(`Bridge connected: ${account.bridge.url}`);
+        recordChannelRuntimeState(account.accountId, {
+          running: true,
+          lastStartAt: Date.now(),
+          lastError: null,
+        });
+      },
       onClose: () => {
-        logger.warn?.("[astron-claw] gateway disconnected");
-        if (!stopped) {
-          bridgeCore?.handleGatewayDisconnected();
-        }
+        logger.warn("Bridge disconnected");
+        recordChannelRuntimeState(account.accountId, { running: false });
       },
     });
 
-    // Start both connections
-    bridgeClient.start();
-    gatewayClient.start();
-  }
+    // Store reference for outbound use
+    activeBridgeClients.set(account.accountId, bridgeClient);
 
-  return { start, stop };
+    // Wrap connect to prevent unhandled rejection
+    try {
+      bridgeClient.start();
+    } catch (err) {
+      logger.error(`Bridge start failed: ${String(err)}`);
+      recordChannelRuntimeState(account.accountId, {
+        running: false,
+        lastError: String(err),
+      });
+    }
+
+    // Return a pending Promise; resolve on abort (same pattern as DingTalk)
+    if (abortSignal) {
+      const onAbort = () => {
+        bridgeClient.stop();
+        activeBridgeClients.delete(account.accountId);
+        recordChannelRuntimeState(account.accountId, {
+          running: false,
+          lastStopAt: Date.now(),
+        });
+        resolve();
+      };
+      if (abortSignal.aborted) {
+        onAbort();
+      } else {
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+  });
+}
+
+// Active bridge client references for outbound messaging
+const activeBridgeClients = new Map();
+
+// ---------------------------------------------------------------------------
+// Probe bridge server connectivity
+// ---------------------------------------------------------------------------
+async function probeBridgeServer(account) {
+  const baseUrl = getBridgeHttpBaseUrl(account.bridge.url);
+  try {
+    const headers = {};
+    if (account.bridge.token) {
+      headers["X-Astron-Bot-Token"] = account.bridge.token;
+    }
+    const res = await fetch(`${baseUrl}/api/health`, { headers, signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { ok: true, name: data.name ?? "AstronClaw Bridge", data };
+    }
+    return { ok: false, error: `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Plugin export
+// Onboarding (interactive configuration)
+// ---------------------------------------------------------------------------
+const astronClawOnboarding = {
+  getStatus: async () => {
+    const account = resolveAstronClawAccount();
+    if (!account) {
+      return {
+        configured: false,
+        message: "AstronClaw is not configured. Bridge URL and token are required.",
+        quickStartScore: 0,
+      };
+    }
+
+    if (!account.bridge.token) {
+      return {
+        configured: false,
+        message: "AstronClaw bridge token is not configured.",
+        quickStartScore: 30,
+      };
+    }
+
+    // Try probe
+    const probe = await probeBridgeServer(account);
+    if (probe.ok) {
+      return {
+        configured: true,
+        message: `Connected to bridge: ${probe.name}`,
+        quickStartScore: 100,
+      };
+    }
+
+    return {
+      configured: true,
+      message: `Bridge configured but unreachable: ${probe.error}`,
+      quickStartScore: 60,
+    };
+  },
+
+  configure: async (interaction) => {
+    const account = resolveAstronClawAccount();
+    const hasCreds = account?.bridge?.token;
+
+    if (hasCreds && interaction?.confirm) {
+      const keep = await interaction.confirm("Bridge credentials already configured. Keep them?");
+      if (keep) {
+        return { cfg: { enabled: true }, accountId: DEFAULT_ACCOUNT_ID };
+      }
+    }
+
+    let bridgeUrl = DEFAULT_BRIDGE_URL;
+    let bridgeToken = "";
+
+    if (interaction?.prompt) {
+      // Show help text
+      if (interaction.display) {
+        interaction.display(
+          "## AstronClaw Configuration\n\n" +
+          "AstronClaw connects to a bridge server that relays messages from chat clients.\n\n" +
+          "You need:\n" +
+          "1. **Bridge URL** - WebSocket URL of the bridge server\n" +
+          "2. **Bridge Token** - Authentication token for the bridge server\n"
+        );
+      }
+
+      const urlInput = await interaction.prompt("Bridge WebSocket URL", { default: DEFAULT_BRIDGE_URL });
+      if (urlInput) bridgeUrl = urlInput;
+
+      const tokenInput = await interaction.prompt("Bridge authentication token");
+      if (tokenInput) bridgeToken = tokenInput;
+    }
+
+    const cfg = {
+      enabled: true,
+      name: "AstronClaw",
+      bridge: {
+        url: bridgeUrl,
+        token: bridgeToken,
+      },
+      allowFrom: ["*"],
+    };
+
+    return { cfg, accountId: DEFAULT_ACCOUNT_ID };
+  },
+
+  disable: async () => {
+    return { cfg: { enabled: false } };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// ChannelPlugin definition (following DingTalk pattern)
+// ---------------------------------------------------------------------------
+const astronClawPlugin = {
+  id: PLUGIN_ID,
+
+  meta: {
+    id: PLUGIN_ID,
+    label: "AstronClaw",
+    selectionLabel: "AstronClaw",
+    blurb: "Bridge-based channel connecting web chat clients to OpenClaw via WebSocket.",
+    systemImage: "message.fill",
+  },
+
+  // --- Capabilities ---
+  capabilities: {
+    chatTypes: ["direct"],
+    media: true,
+    blockStreaming: true,
+    reactions: false,
+    threads: false,
+    nativeCommands: false,
+  },
+
+  // --- Onboarding ---
+  onboarding: astronClawOnboarding,
+
+  // --- Config (account discovery — required by framework) ---
+  config: {
+    listAccountIds: (cfg) => {
+      const pluginCfg = cfg?.channels?.[PLUGIN_ID]
+        ?? cfg?.plugins?.entries?.[PLUGIN_ID]?.config
+        ?? {};
+      // Return account if bridge URL is configured (token checked by isConfigured)
+      if (pluginCfg.bridge?.url || pluginCfg.bridge?.token) {
+        return [DEFAULT_ACCOUNT_ID];
+      }
+      return [];
+    },
+
+    resolveAccount: (cfg, _accountId) => {
+      return resolveAstronClawAccountFromCfg(cfg);
+    },
+
+    defaultAccountId: (_cfg) => DEFAULT_ACCOUNT_ID,
+
+    isConfigured: (account) => {
+      return !!(account?.bridge?.token && account?.bridge?.url);
+    },
+
+    describeAccount: (account) => ({
+      accountId: account?.accountId ?? DEFAULT_ACCOUNT_ID,
+      name: account?.name ?? "AstronClaw",
+      enabled: account?.enabled !== false,
+      configured: !!(account?.bridge?.token && account?.bridge?.url),
+      tokenSource: account?.bridge?.token ? "config" : "none",
+    }),
+
+    resolveAllowFrom: ({ cfg }) => {
+      const account = resolveAstronClawAccountFromCfg(cfg);
+      return account.allowFrom.map((entry) => String(entry));
+    },
+
+    formatAllowFrom: ({ allowFrom }) =>
+      allowFrom
+        .map((entry) => String(entry).trim())
+        .filter(Boolean)
+        .map((entry) => entry.replace(new RegExp(`^${PLUGIN_ID}:(?:user:)?`, "i"), "")),
+  },
+
+  // --- Outbound ---
+  outbound: {
+    deliveryMode: "direct",
+    textChunkLimit: 4000,
+
+    resolveTarget: ({ to, allowFrom, mode }) => {
+      const trimmed = to?.trim() ?? "";
+      const allowListRaw = (allowFrom ?? []).map((e) => String(e).trim()).filter(Boolean);
+      const hasWildcard = allowListRaw.includes("*");
+      const allowList = allowListRaw
+        .filter((e) => e !== "*")
+        .map((e) => normalizeTarget(e))
+        .filter((e) => !!e);
+
+      if (trimmed) {
+        const normalized = normalizeTarget(trimmed);
+        if (!normalized) {
+          if ((mode === "implicit" || mode === "heartbeat") && allowList.length > 0) {
+            return { ok: true, to: allowList[0] };
+          }
+          return {
+            ok: false,
+            error: new Error(`Invalid target: ${trimmed}. Use <userId> or set allowFrom.`),
+          };
+        }
+
+        if (mode === "explicit") {
+          return { ok: true, to: normalized };
+        }
+
+        if (mode === "implicit" || mode === "heartbeat") {
+          if (hasWildcard || allowList.length === 0) {
+            return { ok: true, to: normalized };
+          }
+          if (allowList.includes(normalized)) {
+            return { ok: true, to: normalized };
+          }
+          return { ok: true, to: allowList[0] };
+        }
+
+        return { ok: true, to: normalized };
+      }
+
+      // No target specified
+      if (allowList.length > 0) {
+        return { ok: true, to: allowList[0] };
+      }
+
+      return {
+        ok: false,
+        error: new Error(`No target specified. Set allowFrom or provide a target.`),
+      };
+    },
+
+    sendText: async ({ to, text, cfg }) => {
+      const account = resolveAstronClawAccountFromCfg(cfg);
+      const bridgeClient = activeBridgeClients.get(account.accountId ?? DEFAULT_ACCOUNT_ID);
+      if (!bridgeClient) throw new Error("No active bridge connection");
+      await sendTextMessage(to, text, { account, bridgeClient });
+      return { channel: PLUGIN_ID, messageId: "", chatId: to };
+    },
+
+    sendMedia: async ({ to, text, mediaUrl, cfg }) => {
+      const account = resolveAstronClawAccountFromCfg(cfg);
+      const bridgeClient = activeBridgeClients.get(account.accountId ?? DEFAULT_ACCOUNT_ID);
+      if (!bridgeClient) throw new Error("No active bridge connection");
+      if (mediaUrl) {
+        await sendMediaMessage(to, mediaUrl, { text }, { account, bridgeClient });
+      } else if (text) {
+        await sendTextMessage(to, text, { account, bridgeClient });
+      }
+      return { channel: PLUGIN_ID, messageId: "", chatId: to };
+    },
+  },
+
+  // --- Messaging (target resolution for message tool) ---
+  messaging: {
+    normalizeTarget: (target) => {
+      const trimmed = target?.trim();
+      if (!trimmed) return undefined;
+      return normalizeTarget(trimmed);
+    },
+    targetResolver: {
+      looksLikeId: (id) => {
+        const trimmed = id?.trim();
+        if (!trimmed) return false;
+        // Accept: astron-claw:user:xxx, user:xxx, raw UUID, chat:xxx
+        const prefixPattern = new RegExp(`^${PLUGIN_ID}:`, "i");
+        return prefixPattern.test(trimmed)
+          || trimmed.startsWith("user:")
+          || trimmed.startsWith("chat:")
+          || /^[a-zA-Z0-9_-]+$/.test(trimmed);
+      },
+      hint: `<userId> or ${PLUGIN_ID}:user:<userId>`,
+    },
+  },
+
+  // --- Security ---
+  security: {
+    resolveDmPolicy: ({ cfg }) => {
+      const account = resolveAstronClawAccountFromCfg(cfg);
+      return {
+        policy: "allowlist",
+        allowFrom: account.allowFrom ?? ["*"],
+        policyPath: `channels.${PLUGIN_ID}.allowFrom`,
+        normalizeEntry: (raw) => {
+          if (typeof raw !== "string") return String(raw);
+          return raw.replace(`${PLUGIN_ID}:user:`, "").replace(`${PLUGIN_ID}:`, "");
+        },
+      };
+    },
+  },
+
+  // --- Gateway ---
+  gateway: {
+    startAccount: async (ctx) => {
+      const { account, abortSignal } = ctx;
+      ctx.log?.info?.(`[${account.accountId}] starting AstronClaw bridge connection`);
+
+      const probe = await probeBridgeServer(account);
+      if (probe.ok) {
+        ctx.log?.info?.(`[${account.accountId}] bridge probe OK: ${probe.name}`);
+      } else {
+        ctx.log?.warn?.(`[${account.accountId}] bridge probe failed: ${probe.error} (will try connecting anyway)`);
+      }
+
+      return monitorBridgeProvider(account, abortSignal);
+    },
+
+    logoutAccount: async ({ account, cfg }) => {
+      logger.info(`Logging out account: ${account.accountId}`);
+      const client = activeBridgeClients.get(account.accountId);
+      if (client) {
+        client.stop();
+        activeBridgeClients.delete(account.accountId);
+      }
+      recordChannelRuntimeState(account.accountId, {
+        running: false,
+        lastStopAt: Date.now(),
+      });
+
+      // Clear credentials from config (write to channels.*, not plugins.entries.*)
+      const rt = getRuntime();
+      if (rt?.config?.writeConfigFile) {
+        const nextCfg = { ...cfg };
+        const channelCfg = cfg?.channels?.[PLUGIN_ID] ?? {};
+        const nextChannelCfg = { ...channelCfg };
+        delete nextChannelCfg.bridge;
+
+        if (Object.keys(nextChannelCfg).length > 0) {
+          nextCfg.channels = { ...nextCfg.channels, [PLUGIN_ID]: nextChannelCfg };
+        } else {
+          const nextChannels = { ...nextCfg.channels };
+          delete nextChannels[PLUGIN_ID];
+          if (Object.keys(nextChannels).length > 0) {
+            nextCfg.channels = nextChannels;
+          } else {
+            delete nextCfg.channels;
+          }
+        }
+        await rt.config.writeConfigFile(nextCfg);
+      }
+
+      return { cleared: true, loggedOut: true };
+    },
+  },
+
+  // --- Status ---
+  status: {
+    defaultRuntime: {
+      accountId: DEFAULT_ACCOUNT_ID,
+      running: false,
+      lastStartAt: null,
+      lastStopAt: null,
+      lastError: null,
+    },
+
+    probeAccount: async ({ account, timeoutMs }) => {
+      return probeBridgeServer(account);
+    },
+
+    buildAccountSnapshot: ({ account, runtime, probe }) => {
+      const configured = !!(account?.bridge?.token && account?.bridge?.url);
+      return {
+        accountId: account.accountId,
+        name: account.name ?? "AstronClaw",
+        enabled: account.enabled !== false,
+        configured,
+        tokenSource: account.bridge?.token ? "config" : "none",
+        running: runtime?.running ?? false,
+        lastStartAt: runtime?.lastStartAt ?? null,
+        lastStopAt: runtime?.lastStopAt ?? null,
+        lastError: runtime?.lastError ?? null,
+        mode: "bridge",
+        probe,
+      };
+    },
+
+    collectStatusIssues: (accounts) => {
+      const issues = [];
+      for (const account of accounts) {
+        const accountId = account.accountId ?? DEFAULT_ACCOUNT_ID;
+        if (!account.configured) {
+          issues.push({
+            channel: PLUGIN_ID,
+            accountId,
+            kind: "config",
+            message: "Bridge credentials (url/token) not configured",
+          });
+        }
+      }
+      return issues;
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Plugin entry point
 // ---------------------------------------------------------------------------
 const plugin = {
   id: PLUGIN_ID,
   name: PLUGIN_ID,
-  description:
-    "Connector plugin that bridges the Astron server with the local OpenClaw Gateway.",
-  register(ctx) {
-    const service = createAstronService({
-      logger: ctx.logger,
-      pluginConfig: ctx.pluginConfig ?? {},
-      runtime: ctx.runtime,
-    });
+  version: PLUGIN_VERSION,
+  description: "AstronClaw channel plugin - connects chat clients via bridge server to OpenClaw.",
 
-    ctx.registerService({
-      id: PLUGIN_ID,
-      start: (serviceCtx) => service.start(serviceCtx),
-      stop: () => service.stop(),
-    });
+  register(api) {
+    // Save runtime reference (like DingTalk's setDingTalkRuntime)
+    setRuntime(api.runtime);
+    setLogger(api.runtime?.logger ?? api.logger);
+
+    // Register as a Channel (not a Service)
+    api.registerChannel({ plugin: astronClawPlugin });
+
+    logger.info(`AstronClaw v${PLUGIN_VERSION} registered as channel plugin`);
   },
 };
 

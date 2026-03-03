@@ -3,7 +3,8 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # astron-claw installer
-# Installs the astron-claw OpenClaw plugin.
+# Installs the astron-claw OpenClaw channel plugin and optionally the Python
+# bridge server.
 # Supports both local (plugin/ directory present) and remote (GitHub Release
 # download) modes, so it works equally well from a git clone or via:
 #
@@ -26,7 +27,10 @@ OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$HOME/.openclaw/openclaw.json}"
 
 BOT_TOKEN=""
 SERVER_URL="ws://localhost:8765/bridge/bot"
+ACCOUNT_NAME="AstronClaw"
 VERSION="latest"
+WITH_SERVER="0"
+SERVER_DIR="${SERVER_DIR:-$HOME/.openclaw/astron-claw-server}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,10 +44,15 @@ Options:
   --bot-token <token>       Bot authentication token (required)
   --server-url <url>        Astron bridge WebSocket URL
                             (default: ws://localhost:8765/bridge/bot)
+  --name <name>             Display name for the channel account
+                            (default: AstronClaw)
   --target-dir <path>       Plugin install directory
                             (default: ~/.openclaw/extensions/astron-claw)
   --version <tag>           Release version to download (default: latest)
                             Only used in remote mode (no local plugin/ dir)
+  --with-server             Also install the bridge server component
+  --server-dir <path>       Server install directory
+                            (default: ~/.openclaw/astron-claw-server)
   -h, --help                Show this help message
 USAGE
 }
@@ -90,6 +99,11 @@ while [ "$#" -gt 0 ]; do
       SERVER_URL="$2"
       shift 2
       ;;
+    --name)
+      need_next_arg "$1" "$#"
+      ACCOUNT_NAME="$2"
+      shift 2
+      ;;
     --target-dir)
       need_next_arg "$1" "$#"
       TARGET_DIR="$2"
@@ -98,6 +112,15 @@ while [ "$#" -gt 0 ]; do
     --version)
       need_next_arg "$1" "$#"
       VERSION="$2"
+      shift 2
+      ;;
+    --with-server)
+      WITH_SERVER="1"
+      shift
+      ;;
+    --server-dir)
+      need_next_arg "$1" "$#"
+      SERVER_DIR="$2"
       shift 2
       ;;
     -h|--help)
@@ -126,6 +149,14 @@ fi
 # ---------------------------------------------------------------------------
 require_cmd "$OPENCLAW_BIN" "Install OpenClaw CLI then retry: https://docs.openclaw.dev"
 require_cmd node "Install Node.js then retry: https://nodejs.org"
+
+if [ "$WITH_SERVER" = "1" ]; then
+  require_cmd python3 "Install Python 3 then retry: https://python.org"
+  if ! command -v pip3 >/dev/null 2>&1 && ! python3 -m pip --version >/dev/null 2>&1; then
+    log_error "pip not found. Install pip then retry."
+    exit 1
+  fi
+fi
 
 log "prerequisites check passed"
 
@@ -246,9 +277,9 @@ if [ -f "$TARGET_DIR/dist/index.js" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Register and enable the plugin with OpenClaw
+# Register and enable the channel plugin with OpenClaw
 # ---------------------------------------------------------------------------
-log "registering plugin with OpenClaw"
+log "registering channel plugin with OpenClaw"
 
 # Disable any previous version first
 "$OPENCLAW_BIN" plugins disable "$PLUGIN_NAME" </dev/null >/dev/null 2>&1 || true
@@ -258,37 +289,122 @@ log "registering plugin with OpenClaw"
 "$OPENCLAW_BIN" plugins enable "$PLUGIN_NAME" </dev/null
 
 # ---------------------------------------------------------------------------
-# Write plugin configuration
-# ---------------------------------------------------------------------------
-log "configuring plugin (server=$SERVER_URL)"
-
-CONFIG_JSON=$(node -e "
-  const cfg = {
-    bridge: {
-      url: $(printf '%s' "$SERVER_URL" | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync('/dev/stdin','utf8')))"),
-      token: $(printf '%s' "$BOT_TOKEN" | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync('/dev/stdin','utf8')))")
-    }
-  };
-  process.stdout.write(JSON.stringify(cfg));
-")
-
-"$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME.config" --json "$CONFIG_JSON" </dev/null
-log "plugin config updated"
-
-# ---------------------------------------------------------------------------
 # Installation succeeded -- disable rollback
 # ---------------------------------------------------------------------------
 ROLLBACK_NEEDED="0"
 
 # ---------------------------------------------------------------------------
-# Restart gateway to load the new plugin
+# Install server component (if requested)
 # ---------------------------------------------------------------------------
-log "restarting OpenClaw gateway"
+if [ "$WITH_SERVER" = "1" ]; then
+  log "installing bridge server to $SERVER_DIR"
+
+  # Determine server source directory
+  SERVER_SRC="$SCRIPT_DIR/server"
+  FRONTEND_SRC="$SCRIPT_DIR/frontend"
+
+  if [ "$USE_LOCAL" != "1" ]; then
+    # In remote mode, check if tarball included server files
+    SERVER_SRC="$TMP_DIR/server"
+    FRONTEND_SRC="$TMP_DIR/frontend"
+  fi
+
+  if [ ! -d "$SERVER_SRC" ] || [ ! -f "$SERVER_SRC/requirements.txt" ]; then
+    log_error "server/ directory not found"
+    log_error "server installation requires running from a git clone or a full release tarball"
+    exit 1
+  fi
+
+  mkdir -p "$SERVER_DIR"
+
+  log "copying server files"
+  cp -r "$SERVER_SRC/"* "$SERVER_DIR/"
+
+  if [ -d "$FRONTEND_SRC" ]; then
+    log "copying frontend files"
+    mkdir -p "$SERVER_DIR/frontend"
+    cp -r "$FRONTEND_SRC/"* "$SERVER_DIR/frontend/"
+  fi
+
+  # Create media directory
+  mkdir -p "$SERVER_DIR/media"
+
+  log "installing Python dependencies"
+  if command -v pip3 >/dev/null 2>&1; then
+    pip3 install -r "$SERVER_DIR/requirements.txt" --quiet </dev/null
+  else
+    python3 -m pip install -r "$SERVER_DIR/requirements.txt" --quiet </dev/null
+  fi
+
+  log "server installed to $SERVER_DIR"
+  log ""
+  log "To start the bridge server:"
+  log "  cd $SERVER_DIR && python3 run.py"
+  log ""
+fi
+
+# ---------------------------------------------------------------------------
+# Restart gateway to load and register the channel plugin
+# ---------------------------------------------------------------------------
+log "restarting OpenClaw gateway to register channel"
+"$OPENCLAW_BIN" gateway restart </dev/null >/dev/null 2>&1 || true
+sleep 3
+
+# ---------------------------------------------------------------------------
+# Write channel configuration
+# Config is stored under plugins.entries.<id>.config rather than
+# channels.<id> because OpenClaw validates channels.* against known
+# channel IDs before loading plugins.  The plugin reads config from
+# plugins.entries path at runtime.
+# ---------------------------------------------------------------------------
+log "configuring channel (name=$ACCOUNT_NAME, server=$SERVER_URL)"
+
+CONFIG_JSON=$(node -e "
+  const cfg = {
+    enabled: true,
+    name: $(printf '%s' "$ACCOUNT_NAME" | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync('/dev/stdin','utf8')))"),
+    bridge: {
+      url: $(printf '%s' "$SERVER_URL" | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync('/dev/stdin','utf8')))"),
+      token: $(printf '%s' "$BOT_TOKEN" | node -e "process.stdout.write(JSON.stringify(require('fs').readFileSync('/dev/stdin','utf8')))")
+    },
+    allowFrom: ['*']
+  };
+  process.stdout.write(JSON.stringify(cfg));
+")
+
+ENTRY_JSON=$(node -e "
+  const entry = { enabled: true, config: ${CONFIG_JSON} };
+  process.stdout.write(JSON.stringify(entry));
+")
+
+if ! "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "$ENTRY_JSON" </dev/null 2>/dev/null; then
+  # Fallback: write config directly to the JSON file if CLI fails
+  log "config via CLI failed, writing directly to config file"
+  node -e "
+    const fs = require('fs');
+    const cfgPath = '${OPENCLAW_CONFIG_PATH}';
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    if (!cfg.plugins) cfg.plugins = {};
+    if (!cfg.plugins.entries) cfg.plugins.entries = {};
+    cfg.plugins.entries['${PLUGIN_NAME}'] = ${ENTRY_JSON};
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  " </dev/null
+fi
+log "channel config updated"
+
+# ---------------------------------------------------------------------------
+# Restart gateway again to apply the new configuration
+# ---------------------------------------------------------------------------
+log "restarting OpenClaw gateway to apply configuration"
 "$OPENCLAW_BIN" gateway restart </dev/null >/dev/null 2>&1 || true
 
-log "done! astron-claw plugin installed successfully"
+log "done! astron-claw channel plugin installed successfully"
+log "channel name: $ACCOUNT_NAME"
 log "bridge server: $SERVER_URL"
 log "plugin directory: $TARGET_DIR"
+if [ "$WITH_SERVER" = "1" ]; then
+  log "server directory: $SERVER_DIR"
+fi
 
 }
 

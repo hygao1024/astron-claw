@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 End-to-end integration test for Astron Claw.
-Tests: token API, bot WS, chat WS, message flow, streaming.
+Tests: token API, bot WS, chat WS, message flow, streaming, media upload/download.
 """
 
 import asyncio
+import io
 import json
 import sys
 import urllib.request
@@ -14,14 +15,51 @@ SERVER = "http://localhost:8765"
 WS_SERVER = "ws://localhost:8765"
 
 
-def http_post(url, data=None):
+def http_post(url, data=None, headers=None):
     """Simple sync HTTP POST using urllib."""
     body = json.dumps(data).encode() if data else b""
+    hdrs = {"Content-Type": "application/json"}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read().decode())
+
+
+def http_get(url, headers=None):
+    """Simple sync HTTP GET using urllib."""
+    hdrs = headers or {}
+    req = urllib.request.Request(url, headers=hdrs, method="GET")
+    with urllib.request.urlopen(req) as resp:
+        return resp.read(), resp.headers
+
+
+def multipart_upload(url, file_name, file_data, mime_type, token):
+    """Upload a file using multipart/form-data."""
+    boundary = "----AstronClawTestBoundary12345"
+    body = io.BytesIO()
+
+    # File part
+    body.write(f"--{boundary}\r\n".encode())
+    body.write(f'Content-Disposition: form-data; name="file"; filename="{file_name}"\r\n'.encode())
+    body.write(f"Content-Type: {mime_type}\r\n\r\n".encode())
+    body.write(file_data)
+    body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+
+    data = body.getvalue()
     req = urllib.request.Request(
-        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=data,
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
     )
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode())
+
 
 PASS = "\033[92mPASS\033[0m"
 FAIL = "\033[91mFAIL\033[0m"
@@ -56,7 +94,6 @@ async def main():
     print("\n2. WebSocket Auth")
     try:
         async with websockets.connect(f"{WS_SERVER}/bridge/chat?token=sk-bad") as ws_test:
-            # Server should accept then immediately close with 4001
             try:
                 msg = await asyncio.wait_for(ws_test.recv(), timeout=3)
                 report("WS /bridge/chat bad token rejects", False, f"got message: {msg[:60]}")
@@ -345,6 +382,319 @@ async def main():
         report("Second bot rejected", False, str(e)[:80])
     finally:
         await bot1.close()
+
+    # ── 10. Media Upload API ──
+    print("\n10. Media Upload API")
+
+    # Create a fresh token for media tests
+    token3 = http_post(f"{SERVER}/api/token")["token"]
+
+    # Test upload with valid token
+    try:
+        test_image_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100  # Minimal PNG-like data
+        result = multipart_upload(
+            f"{SERVER}/api/media/upload",
+            "test_image.png",
+            test_image_data,
+            "image/png",
+            token3,
+        )
+        media_id = result.get("mediaId", "")
+        report(
+            "Media upload succeeds",
+            media_id.startswith("media_")
+            and result.get("fileName") == "test_image.png"
+            and result.get("mimeType") == "image/png"
+            and result.get("fileSize") == len(test_image_data)
+            and "downloadUrl" in result,
+            f"mediaId={media_id[:20]}..., size={result.get('fileSize')}"
+        )
+    except Exception as e:
+        media_id = ""
+        report("Media upload succeeds", False, str(e)[:80])
+
+    # Test upload with invalid token
+    try:
+        multipart_upload(
+            f"{SERVER}/api/media/upload",
+            "bad.png",
+            b"data",
+            "image/png",
+            "sk-invalid-token",
+        )
+        report("Media upload rejects bad token", False, "should have failed")
+    except urllib.error.HTTPError as e:
+        report("Media upload rejects bad token", e.code == 401, f"status={e.code}")
+    except Exception as e:
+        report("Media upload rejects bad token", False, str(e)[:80])
+
+    # ── 11. Media Download API ──
+    print("\n11. Media Download API")
+
+    if media_id:
+        # Download with valid token via query param
+        try:
+            download_url = f"{SERVER}/api/media/download/{media_id}?token={token3}"
+            data, headers = http_get(download_url)
+            report(
+                "Media download succeeds (query param)",
+                len(data) == len(test_image_data),
+                f"downloaded {len(data)} bytes, content-type={headers.get('content-type', '')}"
+            )
+        except Exception as e:
+            report("Media download succeeds (query param)", False, str(e)[:80])
+
+        # Download with valid token via header
+        try:
+            download_url = f"{SERVER}/api/media/download/{media_id}"
+            data, headers = http_get(download_url, {"Authorization": f"Bearer {token3}"})
+            report(
+                "Media download succeeds (auth header)",
+                len(data) == len(test_image_data),
+                f"downloaded {len(data)} bytes"
+            )
+        except Exception as e:
+            report("Media download succeeds (auth header)", False, str(e)[:80])
+
+        # Download with invalid token
+        try:
+            download_url = f"{SERVER}/api/media/download/{media_id}?token=sk-bad"
+            http_get(download_url)
+            report("Media download rejects bad token", False, "should have failed")
+        except urllib.error.HTTPError as e:
+            report("Media download rejects bad token", e.code == 401, f"status={e.code}")
+        except Exception as e:
+            report("Media download rejects bad token", False, str(e)[:80])
+
+        # Download non-existent media
+        try:
+            download_url = f"{SERVER}/api/media/download/media_nonexistent?token={token3}"
+            http_get(download_url)
+            report("Media download 404 for missing ID", False, "should have failed")
+        except urllib.error.HTTPError as e:
+            report("Media download 404 for missing ID", e.code == 404, f"status={e.code}")
+        except Exception as e:
+            report("Media download 404 for missing ID", False, str(e)[:80])
+    else:
+        report("Media download succeeds (query param)", False, "skipped - no media_id")
+        report("Media download succeeds (auth header)", False, "skipped - no media_id")
+        report("Media download rejects bad token", False, "skipped - no media_id")
+        report("Media download 404 for missing ID", False, "skipped - no media_id")
+
+    # ── 12. Media Message Flow ──
+    print("\n12. Media Message Flow (Chat -> Bot with media)")
+
+    # Create a token and connect bot + chat
+    token4 = http_post(f"{SERVER}/api/token")["token"]
+    media_bot_ws = await websockets.connect(f"{WS_SERVER}/bridge/bot?token={token4}")
+    media_chat_ws = await websockets.connect(f"{WS_SERVER}/bridge/chat?token={token4}")
+
+    # Consume initial bot_status
+    raw = await asyncio.wait_for(media_chat_ws.recv(), timeout=5)
+
+    # Upload a file first
+    try:
+        test_file_data = b"Hello, this is a test document content."
+        upload_result = multipart_upload(
+            f"{SERVER}/api/media/upload",
+            "test_doc.txt",
+            test_file_data,
+            "text/plain",
+            token4,
+        )
+        file_media_id = upload_result.get("mediaId", "")
+
+        # Chat sends a file message
+        await media_chat_ws.send(json.dumps({
+            "type": "message",
+            "msgType": "file",
+            "content": "Here is a document",
+            "media": {
+                "mediaId": file_media_id,
+                "fileName": "test_doc.txt",
+                "mimeType": "text/plain",
+                "fileSize": len(test_file_data),
+                "downloadUrl": upload_result.get("downloadUrl", ""),
+            },
+        }))
+
+        # Bot should receive a JSON-RPC prompt with media content
+        raw = await asyncio.wait_for(media_bot_ws.recv(), timeout=5)
+        rpc_req = json.loads(raw)
+        prompt_content = rpc_req.get("params", {}).get("prompt", {}).get("content", [])
+
+        has_text = any(c.get("type") == "text" for c in prompt_content)
+        has_media = any(c.get("type") == "media" for c in prompt_content)
+        report(
+            "Bot receives media message",
+            rpc_req.get("method") == "session/prompt" and has_text and has_media,
+            f"has_text={has_text}, has_media={has_media}"
+        )
+
+        # Verify media reference in the prompt
+        media_items = [c for c in prompt_content if c.get("type") == "media"]
+        if media_items:
+            media_ref = media_items[0].get("media", {})
+            report(
+                "Media reference has correct fields",
+                media_ref.get("mediaId") == file_media_id
+                and media_ref.get("fileName") == "test_doc.txt",
+                f"mediaId={media_ref.get('mediaId', '')[:20]}..."
+            )
+        else:
+            report("Media reference has correct fields", False, "no media items in prompt")
+
+    except Exception as e:
+        report("Bot receives media message", False, str(e)[:80])
+        report("Media reference has correct fields", False, "skipped")
+
+    # ── 13. Bot sends media to chat ──
+    print("\n13. Bot Media Message (Bot -> Chat)")
+
+    try:
+        # Upload a file as the bot
+        bot_file_data = b"Bot generated content for testing purposes."
+        bot_upload = multipart_upload(
+            f"{SERVER}/api/media/upload",
+            "bot_result.txt",
+            bot_file_data,
+            "text/plain",
+            token4,
+        )
+        bot_media_id = bot_upload.get("mediaId", "")
+
+        # Bot sends agent_media update
+        media_update = {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "test-session",
+                "update": {
+                    "sessionUpdate": "agent_media",
+                    "content": {
+                        "msgType": "file",
+                        "text": "Here is the result file",
+                        "media": {
+                            "mediaId": bot_media_id,
+                            "fileName": "bot_result.txt",
+                            "mimeType": "text/plain",
+                            "fileSize": len(bot_file_data),
+                        },
+                    },
+                },
+            },
+        }
+        await media_bot_ws.send(json.dumps(media_update))
+
+        raw = await asyncio.wait_for(media_chat_ws.recv(), timeout=5)
+        media_msg = json.loads(raw)
+        report(
+            "Chat receives bot media message",
+            media_msg.get("type") == "message"
+            and media_msg.get("msgType") == "file"
+            and media_msg.get("media", {}).get("mediaId") == bot_media_id,
+            f"type={media_msg.get('type')}, msgType={media_msg.get('msgType')}"
+        )
+
+        # Verify download URL in forwarded message
+        download_url = media_msg.get("media", {}).get("downloadUrl", "")
+        report(
+            "Media message includes downloadUrl",
+            bot_media_id in download_url,
+            f"downloadUrl={download_url[:60]}"
+        )
+
+    except Exception as e:
+        report("Chat receives bot media message", False, str(e)[:80])
+        report("Media message includes downloadUrl", False, "skipped")
+
+    await media_bot_ws.close()
+    await media_chat_ws.close()
+
+    # ── 14. Chat sends media message without media info -> error ──
+    print("\n14. Media Validation")
+
+    token5 = http_post(f"{SERVER}/api/token")["token"]
+    val_bot_ws = await websockets.connect(f"{WS_SERVER}/bridge/bot?token={token5}")
+    val_chat_ws = await websockets.connect(f"{WS_SERVER}/bridge/chat?token={token5}")
+    raw = await asyncio.wait_for(val_chat_ws.recv(), timeout=5)  # consume bot_status
+
+    try:
+        # Send image message without media object
+        await val_chat_ws.send(json.dumps({
+            "type": "message",
+            "msgType": "image",
+            "content": "",
+        }))
+
+        raw = await asyncio.wait_for(val_chat_ws.recv(), timeout=5)
+        err_msg = json.loads(raw)
+        report(
+            "Image msg without media -> error",
+            err_msg.get("type") == "error",
+            f"got: {json.dumps(err_msg)[:60]}"
+        )
+    except Exception as e:
+        report("Image msg without media -> error", False, str(e)[:80])
+
+    try:
+        # Send empty text message -> error
+        await val_chat_ws.send(json.dumps({
+            "type": "message",
+            "msgType": "text",
+            "content": "",
+        }))
+
+        raw = await asyncio.wait_for(val_chat_ws.recv(), timeout=5)
+        err_msg = json.loads(raw)
+        report(
+            "Empty text msg -> error",
+            err_msg.get("type") == "error",
+            f"got: {json.dumps(err_msg)[:60]}"
+        )
+    except Exception as e:
+        report("Empty text msg -> error", False, str(e)[:80])
+
+    await val_bot_ws.close()
+    await val_chat_ws.close()
+
+    # ── 15. Upload file type validation ──
+    print("\n15. Upload Validation")
+
+    token6 = http_post(f"{SERVER}/api/token")["token"]
+
+    # Upload empty file
+    try:
+        multipart_upload(
+            f"{SERVER}/api/media/upload",
+            "empty.txt",
+            b"",
+            "text/plain",
+            token6,
+        )
+        report("Empty file upload rejected", False, "should have failed")
+    except urllib.error.HTTPError as e:
+        report("Empty file upload rejected", e.code == 400, f"status={e.code}")
+    except Exception as e:
+        report("Empty file upload rejected", False, str(e)[:80])
+
+    # Upload file with valid type
+    try:
+        result = multipart_upload(
+            f"{SERVER}/api/media/upload",
+            "document.pdf",
+            b"%PDF-1.4 fake pdf content for testing",
+            "application/pdf",
+            token6,
+        )
+        report(
+            "PDF upload succeeds",
+            result.get("mediaId", "").startswith("media_")
+            and result.get("mimeType") == "application/pdf",
+            f"mediaId={result.get('mediaId', '')[:20]}..."
+        )
+    except Exception as e:
+        report("PDF upload succeeds", False, str(e)[:80])
 
     _summarize()
 

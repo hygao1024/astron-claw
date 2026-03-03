@@ -3,7 +3,8 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # astron-claw uninstaller
-# Removes the astron-claw OpenClaw plugin and its configuration.
+# Removes the astron-claw OpenClaw channel plugin, its configuration,
+# and optionally the bridge server installation.
 #
 # Wrapped in main() so `curl ... | bash` reads the entire script before
 # executing — prevents sub-commands from consuming stdin.
@@ -14,6 +15,7 @@ main() {
 OPENCLAW_BIN="${OPENCLAW_BIN:-openclaw}"
 PLUGIN_NAME="astron-claw"
 TARGET_DIR="${TARGET_DIR:-$HOME/.openclaw/extensions/astron-claw}"
+SERVER_DIR="${SERVER_DIR:-$HOME/.openclaw/astron-claw-server}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -26,7 +28,10 @@ Usage:
 Options:
   --target-dir <path>       Plugin install directory
                             (default: ~/.openclaw/extensions/astron-claw)
-  --keep-config             Do not remove plugin config from openclaw.json
+  --keep-config             Do not remove channel config from openclaw.json
+  --with-server             Also remove the bridge server installation
+  --server-dir <path>       Server install directory
+                            (default: ~/.openclaw/astron-claw-server)
   -y, --yes                 Skip confirmation prompt
   -h, --help                Show this help message
 USAGE
@@ -45,6 +50,7 @@ log_error() {
 # ---------------------------------------------------------------------------
 SKIP_CONFIRM="0"
 KEEP_CONFIG="0"
+WITH_SERVER="0"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -59,6 +65,18 @@ while [ "$#" -gt 0 ]; do
     --keep-config)
       KEEP_CONFIG="1"
       shift
+      ;;
+    --with-server)
+      WITH_SERVER="1"
+      shift
+      ;;
+    --server-dir)
+      if [ "$#" -lt 2 ]; then
+        log_error "missing value for $1"
+        exit 1
+      fi
+      SERVER_DIR="$2"
+      shift 2
       ;;
     -y|--yes)
       SKIP_CONFIRM="1"
@@ -80,8 +98,11 @@ done
 # Confirmation
 # ---------------------------------------------------------------------------
 if [ "$SKIP_CONFIRM" != "1" ]; then
-  printf "[astron-uninstall] This will remove the astron-claw plugin.\n"
+  printf "[astron-uninstall] This will remove the astron-claw channel plugin.\n"
   printf "[astron-uninstall]   Plugin directory: %s\n" "$TARGET_DIR"
+  if [ "$WITH_SERVER" = "1" ]; then
+    printf "[astron-uninstall]   Server directory: %s\n" "$SERVER_DIR"
+  fi
   printf "[astron-uninstall] Continue? [y/N] "
   read -r answer </dev/tty || { log_error "cannot read from terminal (use -y for non-interactive mode)"; exit 1; }
   case "$answer" in
@@ -112,10 +133,13 @@ if [ "$HAS_OPENCLAW" = "1" ]; then
   "$OPENCLAW_BIN" plugins uninstall "$PLUGIN_NAME" </dev/null >/dev/null 2>&1 || true
 
   if [ "$KEEP_CONFIG" != "1" ]; then
-    log "removing plugin config"
+    log "removing channel config"
+    # Remove plugin entry config (current path)
     "$OPENCLAW_BIN" config set "plugins.entries.$PLUGIN_NAME" --json "null" </dev/null >/dev/null 2>&1 || true
+    # Also clean up legacy channels path if present
+    "$OPENCLAW_BIN" config set "channels.$PLUGIN_NAME" --json "null" </dev/null >/dev/null 2>&1 || true
   else
-    log "keeping plugin config (--keep-config)"
+    log "keeping config (--keep-config)"
   fi
 else
   log "openclaw CLI not found, skipping plugin unregister"
@@ -141,6 +165,22 @@ for bak in "${TARGET_DIR}.bak."*; do
 done
 
 # ---------------------------------------------------------------------------
+# Remove server installation (if requested)
+# ---------------------------------------------------------------------------
+if [ "$WITH_SERVER" = "1" ]; then
+  if [ -d "$SERVER_DIR" ]; then
+    # Remove media directory first (log explicitly as it may contain user data)
+    if [ -d "$SERVER_DIR/media" ]; then
+      log "removing media directory: $SERVER_DIR/media"
+    fi
+    log "removing server directory: $SERVER_DIR"
+    rm -rf "$SERVER_DIR"
+  else
+    log "server directory not found: $SERVER_DIR (already removed?)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Restart gateway (after files are removed so plugin won't be re-discovered)
 # ---------------------------------------------------------------------------
 if [ "$HAS_OPENCLAW" = "1" ]; then
@@ -148,7 +188,10 @@ if [ "$HAS_OPENCLAW" = "1" ]; then
   "$OPENCLAW_BIN" gateway restart </dev/null >/dev/null 2>&1 || true
 fi
 
-log "done! astron-claw plugin has been removed"
+log "done! astron-claw channel plugin has been removed"
+if [ "$WITH_SERVER" = "1" ]; then
+  log "bridge server has also been removed"
+fi
 
 }
 

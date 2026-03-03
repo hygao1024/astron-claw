@@ -1,13 +1,14 @@
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Cookie
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Cookie, Header, UploadFile, File
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 
 from token_manager import TokenManager
 from bridge import ConnectionBridge
 from admin_auth import AdminAuth
+from media_manager import MediaManager, MAX_FILE_SIZE
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,8 +17,16 @@ app = FastAPI(title="Astron Claw Bridge Server")
 token_manager = TokenManager()
 bridge = ConnectionBridge()
 admin_auth = AdminAuth()
+media_manager = MediaManager()
 
-frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+# Wire media_manager into bridge so it can resolve download URLs
+bridge.set_media_manager(media_manager)
+
+_server_dir = Path(__file__).resolve().parent
+# Repo layout: server/ and frontend/ are siblings under project root
+# Installed layout: frontend/ is a subdirectory of the server dir
+_candidate = _server_dir.parent / "frontend"
+frontend_dir = _candidate if _candidate.is_dir() else _server_dir / "frontend"
 
 
 # ── HTTP API ──────────────────────────────────────────────────────────────────
@@ -172,8 +181,84 @@ async def admin_cleanup(admin_session: str | None = Cookie(default=None)):
     denied = _require_admin(admin_session)
     if denied:
         return denied
-    count = token_manager.cleanup_expired()
-    return {"removed": count}
+    token_count = token_manager.cleanup_expired()
+    media_count = media_manager.cleanup_expired()
+    return {"removed_tokens": token_count, "removed_media": media_count}
+
+
+# ── Media API ────────────────────────────────────────────────────────────────
+
+
+def _validate_token_header(authorization: str | None) -> str | None:
+    """Extract and validate token from Authorization header (Bearer scheme).
+    Returns the token string if valid, None otherwise."""
+    if not authorization:
+        return None
+    parts = authorization.split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        token = parts[1]
+    else:
+        token = authorization
+    if token_manager.validate(token):
+        return token
+    return None
+
+
+@app.post("/api/media/upload")
+async def upload_media(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    token = _validate_token_header(authorization)
+    if not token:
+        return JSONResponse({"error": "Invalid or missing token"}, status_code=401)
+
+    # Read file content
+    file_data = await file.read()
+
+    if len(file_data) > MAX_FILE_SIZE:
+        return JSONResponse(
+            {"error": f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB"},
+            status_code=413,
+        )
+
+    mime_type = file.content_type or "application/octet-stream"
+    file_name = file.filename or "unnamed"
+
+    result = media_manager.store(file_data, file_name, mime_type, token)
+    if not result:
+        return JSONResponse({"error": "Invalid file or unsupported type"}, status_code=400)
+
+    result["downloadUrl"] = f"/api/media/download/{result['mediaId']}"
+    return result
+
+
+@app.get("/api/media/download/{media_id}")
+async def download_media(
+    media_id: str,
+    authorization: str | None = Header(default=None),
+    token: str = Query(default=""),
+):
+    # Accept token from either Authorization header or query param
+    auth_token = _validate_token_header(authorization)
+    if not auth_token and token:
+        auth_token = token if token_manager.validate(token) else None
+    if not auth_token:
+        return JSONResponse({"error": "Invalid or missing token"}, status_code=401)
+
+    meta = media_manager.get_metadata(media_id)
+    if not meta:
+        return JSONResponse({"error": "Media not found or expired"}, status_code=404)
+
+    file_path = media_manager.get_file_path(media_id)
+    if not file_path:
+        return JSONResponse({"error": "Media file missing"}, status_code=404)
+
+    return FileResponse(
+        path=str(file_path),
+        media_type=meta["mimeType"],
+        filename=meta["fileName"],
+    )
 
 
 # ── Bot WebSocket ─────────────────────────────────────────────────────────────
@@ -282,16 +367,29 @@ async def ws_chat(
                 continue
 
             if msg_type == "message":
+                msg_type_inner = data.get("msgType", "text")
                 content = data.get("content", "")
-                if not content:
+                media = data.get("media")
+
+                # Text messages require content
+                if msg_type_inner == "text" and not content:
                     await ws.send_json({"type": "error", "content": "Empty message"})
+                    continue
+
+                # Media messages require media info
+                if msg_type_inner in ("image", "file", "audio", "video") and not media:
+                    await ws.send_json({"type": "error", "content": "Missing media info"})
                     continue
 
                 if not bridge.is_bot_connected(token):
                     await ws.send_json({"type": "error", "content": "No bot connected"})
                     continue
 
-                req_id = await bridge.send_to_bot(token, content)
+                req_id = await bridge.send_to_bot(
+                    token, content,
+                    msg_type=msg_type_inner,
+                    media=media,
+                )
                 if not req_id:
                     await ws.send_json({"type": "error", "content": "Failed to send to bot"})
 

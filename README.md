@@ -1,6 +1,6 @@
 # Astron Claw
 
-AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端和 Chat 端分别通过 WebSocket 连接，根据 Token 配对并双向转发消息，支持流式回复。
+AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端和 Chat 端分别通过 WebSocket 连接，根据 Token 配对并双向转发消息，支持流式回复。作为 OpenClaw Channel Plugin 运行，实现完整的消息和媒体双向传输。
 
 ```
 Chat Client ──WebSocket──▶ Bridge Server ◀──WebSocket── Bot Plugin (OpenClaw)
@@ -9,13 +9,15 @@ Chat Client ──WebSocket──▶ Bridge Server ◀──WebSocket── Bot 
 
 ## 特性
 
+- **OpenClaw Channel Plugin** — 原生 ChannelPlugin 接口，支持 message tool 主动发送消息
 - **WebSocket 双向桥接** — Bot 无需公网 IP，主动出站连接即可
+- **多会话管理** — 支持创建/切换多个独立对话，前端 Session Drawer 可 pin 固定
+- **媒体消息支持** — 图片、音频、视频、文件的上传/下载和双向传输
 - **Token 管理** — 支持自定义名称、多种过期时间（1h/6h/1d/7d/30d/永不过期）
-- **流式传输** — 支持思考过程、文本片段、工具调用等多种消息类型
-- **多会话管理** — 支持创建多个独立会话并自由切换，每个会话上下文隔离
+- **流式传输** — Token 级别真流式输出（onPartialReply 模式），支持思考过程、文本片段、工具调用/结果等多种消息类型
 - **Admin 管理面板** — 密码认证、Token CRUD、在线状态监控
-- **Web 聊天界面** — 内置 Chat 前端，输入 Token 即可与 Bot 对话，左侧抽屉管理会话（支持固定/浮动模式）
-- **OpenClaw 插件** — 一键安装，桥接本地 OpenClaw Gateway
+- **Web 聊天界面** — 内置 Chat 前端，支持文本和附件发送、会话切换
+- **JSON-RPC 2.0 协议** — Bot 端和服务端之间使用标准 JSON-RPC 通信
 
 ## 项目结构
 
@@ -26,14 +28,15 @@ astron-claw/
 │   ├── bridge.py           # 连接桥接逻辑
 │   ├── token_manager.py    # Token 管理 (SQLite)
 │   ├── admin_auth.py       # Admin 认证
+│   ├── media_manager.py    # 媒体文件管理（上传/下载/过期清理）
 │   ├── run.py              # 启动入口
 │   └── requirements.txt
 ├── frontend/               # 前端
-│   ├── index.html          # Chat 聊天界面
+│   ├── index.html          # Chat 聊天界面（支持文本+附件）
 │   ├── admin.html          # Admin 管理面板
 │   └── astron_logo.png
-├── plugin/                 # OpenClaw 插件 (Node.js)
-│   ├── dist/index.js       # 插件主逻辑
+├── plugin/                 # OpenClaw Channel Plugin (Node.js)
+│   ├── dist/index.js       # ChannelPlugin 实现
 │   ├── openclaw.plugin.json
 │   └── package.json
 ├── docs/
@@ -42,6 +45,8 @@ astron-claw/
 │   └── release.sh          # 插件打包脚本
 ├── install.sh              # 插件安装脚本（支持远程一行安装）
 ├── uninstall.sh            # 插件卸载脚本
+├── test_streaming.py       # 流式传输测试（Bridge 层）
+├── test_e2e_streaming.py   # 端到端流式测试（真实插件）
 └── test_integration.py     # 集成测试
 ```
 
@@ -107,7 +112,9 @@ curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/master/uninst
 | `POST` | `/api/admin/tokens` | 创建 Token（支持名称和过期时间） |
 | `PATCH` | `/api/admin/tokens/{token}` | 更新 Token 名称/过期时间 |
 | `DELETE` | `/api/admin/tokens/{token}` | 删除 Token |
-| `POST` | `/api/admin/cleanup` | 清理过期 Token |
+| `POST` | `/api/admin/cleanup` | 清理过期 Token 和媒体文件 |
+| `POST` | `/api/media/upload` | 上传媒体文件 |
+| `GET` | `/api/media/download/{media_id}` | 下载媒体文件 |
 | WebSocket | `/bridge/bot` | Bot 端连接 |
 | WebSocket | `/bridge/chat` | Chat 端连接（支持多会话切换） |
 
@@ -115,7 +122,7 @@ curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/master/uninst
 
 - **服务端**：Python 3 / FastAPI / Uvicorn / SQLite
 - **前端**：原生 HTML / CSS / JavaScript
-- **插件**：Node.js / WebSocket (ws)
+- **插件**：Node.js / WebSocket (ws) / OpenClaw ChannelPlugin SDK
 - **协议**：WebSocket + JSON-RPC 2.0
 
 ## License

@@ -1,7 +1,7 @@
 {
   "name": "astron-claw",
-  "version": "1.0.1",
-  "description": "OpenClaw connector that bridges the Astron server with the local OpenClaw Gateway.",
+  "version": "2.0.0",
+  "description": "AstronClaw channel plugin - connects chat clients via bridge server to OpenClaw.",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -11,7 +11,15 @@
   "openclaw": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "channel": {
+      "id": "astron-claw",
+      "label": "AstronClaw",
+      "selectionLabel": "AstronClaw",
+      "blurb": "Bridge-based channel connecting web chat clients to OpenClaw via WebSocket.",
+      "order": 100,
+      "quickstartAllowFrom": true
+    }
   },
   "dependencies": {
     "ws": "^8.18.0"

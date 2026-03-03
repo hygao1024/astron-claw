@@ -702,18 +702,282 @@ html, body {
   height: 18px;
 }
 
-/* -- Session Drawer -- */
+/* ===== Attachment Button ===== */
+.attach-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.attach-btn:hover {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.attach-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ===== File Preview Bar ===== */
+.file-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
+  animation: msgIn 0.2s ease;
+}
+
+.file-preview-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg-primary);
+}
+
+.file-preview-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-preview-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-preview-size {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.file-preview-remove {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+
+.file-preview-remove:hover {
+  color: var(--error);
+  border-color: var(--error);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* ===== Media in Messages ===== */
+.media-image {
+  max-width: 300px;
+  max-height: 300px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: block;
+  margin: 4px 0;
+  transition: opacity var(--transition);
+}
+
+.media-image:hover {
+  opacity: 0.9;
+}
+
+.media-file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin: 4px 0;
+  max-width: 300px;
+}
+
+.message.user .media-file-card {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.media-file-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.media-file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.media-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media-file-size {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.message.user .media-file-size {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.media-file-download {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+
+.media-file-download:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.media-audio {
+  margin: 4px 0;
+  max-width: 300px;
+  width: 100%;
+}
+
+.media-video {
+  max-width: 300px;
+  max-height: 240px;
+  border-radius: var(--radius-sm);
+  margin: 4px 0;
+}
+
+.media-caption {
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ===== Lightbox ===== */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.lightbox img {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  font-size: 20px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ===== Drag-and-Drop Overlay ===== */
+.drag-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(79, 143, 247, 0.1);
+  border: 3px dashed var(--accent);
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: fadeIn 0.2s ease;
+}
+
+.drag-overlay-text {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--bg-secondary);
+  padding: 12px 24px;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+}
+
+/* ===== Session Drawer ===== */
 .session-overlay {
   position: fixed;
   inset: 0;
+  z-index: 900;
   background: rgba(0, 0, 0, 0.4);
-  z-index: 199;
   opacity: 0;
-  transition: opacity 0.25s ease;
   pointer-events: none;
+  transition: opacity 0.25s ease;
 }
 
-.session-overlay.open {
+.session-overlay.visible {
   opacity: 1;
   pointer-events: auto;
 }
@@ -722,36 +986,28 @@ html, body {
   position: fixed;
   top: 0;
   left: 0;
+  bottom: 0;
   width: 260px;
-  height: 100%;
+  z-index: 950;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border);
-  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.2);
   transform: translateX(-100%);
   transition: transform 0.25s ease;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .session-drawer.open {
   transform: translateX(0);
 }
 
-.session-drawer.pinned {
-  transform: translateX(0);
-  box-shadow: none;
-}
-
-body.drawer-pinned #chat-screen {
-  margin-left: 260px;
-}
-
 .session-drawer-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -764,17 +1020,16 @@ body.drawer-pinned #chat-screen {
 
 .session-drawer-actions {
   display: flex;
-  align-items: center;
   gap: 4px;
 }
 
 .session-drawer-btn {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
+  border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
   color: var(--text-secondary);
@@ -788,19 +1043,21 @@ body.drawer-pinned #chat-screen {
   color: var(--text-primary);
 }
 
-.session-drawer-btn.pinned {
+.session-drawer-btn.active {
+  background: var(--accent-dim);
   color: var(--accent);
+  border-color: var(--accent);
 }
 
 .session-new-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  margin: 12px;
-  padding: 10px 14px;
+  gap: 6px;
+  margin: 12px 12px 8px;
+  padding: 10px;
+  border: 2px dashed var(--border);
   border-radius: var(--radius-sm);
-  border: 1.5px dashed var(--border);
   background: transparent;
   color: var(--text-secondary);
   font-size: 13px;
@@ -811,32 +1068,26 @@ body.drawer-pinned #chat-screen {
 }
 
 .session-new-btn:hover {
-  background: var(--accent-dim);
   border-color: var(--accent);
   color: var(--accent);
+  background: var(--accent-dim);
 }
 
-.session-new-btn svg {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
-.session-drawer-list {
+.session-list {
   flex: 1;
   overflow-y: auto;
-  padding: 6px 0;
+  padding: 4px 8px 12px;
 }
 
 .session-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border-left: 3px solid transparent;
-  border-radius: 0;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all var(--transition);
+  margin-bottom: 2px;
 }
 
 .session-item:hover {
@@ -844,36 +1095,28 @@ body.drawer-pinned #chat-screen {
 }
 
 .session-item.active {
-  border-left-color: var(--accent);
   background: var(--accent-dim);
 }
 
 .session-item-icon {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   border-radius: 8px;
   background: var(--bg-tertiary);
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 16px;
   flex-shrink: 0;
-}
-
-.session-item-icon svg {
-  width: 18px;
-  height: 18px;
   color: var(--text-muted);
 }
 
 .session-item.active .session-item-icon {
-  background: var(--accent-dim);
+  background: var(--accent);
+  color: #fff;
 }
 
-.session-item.active .session-item-icon svg {
-  color: var(--accent);
-}
-
-.session-item-body {
+.session-item-info {
   flex: 1;
   min-width: 0;
 }
@@ -882,41 +1125,38 @@ body.drawer-pinned #chat-screen {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-item.active .session-item-title {
-  color: var(--accent);
 }
 
 .session-item-preview {
   font-size: 12px;
   color: var(--text-muted);
-  margin-top: 2px;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  margin-top: 1px;
 }
 
 .session-item-time {
   font-size: 11px;
   color: var(--text-muted);
   flex-shrink: 0;
-  align-self: flex-start;
-  margin-top: 2px;
+  white-space: nowrap;
 }
 
-.session-drawer-btn svg {
-  width: 16px;
-  height: 16px;
-  transition: transform var(--transition), color var(--transition);
+body.drawer-pinned #chat-screen {
+  margin-left: 260px;
 }
 
-.session-drawer-btn.pinned svg {
-  color: var(--accent);
-  transform: rotate(45deg);
+body.drawer-pinned .session-drawer {
+  transform: translateX(0);
+  box-shadow: none;
+}
+
+body.drawer-pinned .session-overlay {
+  display: none;
 }
 
 /* ===== Mobile ===== */
@@ -927,6 +1167,12 @@ body.drawer-pinned #chat-screen {
   .input-area { padding: 10px 14px; }
   .message-bubble { max-width: 92%; }
   .thinking-block, .tool-block { max-width: 92%; }
+  .media-image { max-width: 220px; }
+  .media-file-card { max-width: 100%; }
+  .media-video { max-width: 100%; }
+  body.drawer-pinned #chat-screen { margin-left: 0; }
+  body.drawer-pinned .session-drawer { transform: translateX(-100%); box-shadow: 4px 0 24px rgba(0,0,0,0.2); }
+  body.drawer-pinned .session-overlay { display: block; }
 }
 </style>
 </head>
@@ -955,6 +1201,20 @@ body.drawer-pinned #chat-screen {
 
 <!-- ===== Chat Screen ===== -->
 <div id="chat-screen" class="hidden">
+  <!-- Session Drawer -->
+  <div class="session-overlay" id="session-overlay" onclick="hideSessionPanel()"></div>
+  <div class="session-drawer" id="session-drawer">
+    <div class="session-drawer-header">
+      <h3>Sessions</h3>
+      <div class="session-drawer-actions">
+        <button class="session-drawer-btn" id="pin-btn" onclick="togglePinDrawer()" title="Pin drawer">&#128204;</button>
+        <button class="session-drawer-btn" onclick="hideSessionPanel()" title="Close">&#10005;</button>
+      </div>
+    </div>
+    <button class="session-new-btn" onclick="newSession()">+ New Chat</button>
+    <div class="session-list" id="session-list"></div>
+  </div>
+
   <!-- Header -->
   <div class="chat-header">
     <button class="icon-btn" onclick="toggleSessionPanel()" title="Sessions">&#9776;</button>
@@ -980,13 +1240,20 @@ body.drawer-pinned #chat-screen {
   <div class="bot-banner hidden" id="bot-banner"></div>
 
   <!-- Messages -->
-  <div class="messages-container" id="messages-container">
+  <div class="messages-container" id="messages-container" style="position:relative;">
     <div class="messages-list" id="messages-list"></div>
   </div>
 
   <!-- Input -->
   <div class="input-area">
+    <div class="file-preview hidden" id="file-preview"></div>
     <div class="input-wrapper">
+      <button class="attach-btn" id="attach-btn" onclick="document.getElementById('file-input').click()" title="Attach file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+        </svg>
+      </button>
+      <input type="file" id="file-input" class="hidden" onchange="handleFileSelect(this.files)">
       <textarea id="msg-input" rows="1" placeholder="Type a message..." onkeydown="handleKeyDown(event)" oninput="autoGrow(this)"></textarea>
       <button class="send-btn" id="send-btn" onclick="sendMessage()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -995,6 +1262,12 @@ body.drawer-pinned #chat-screen {
         </svg>
       </button>
     </div>
+  </div>
+
+  <!-- Lightbox -->
+  <div class="lightbox hidden" id="lightbox" onclick="closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">&#10005;</button>
+    <img id="lightbox-img" src="" alt="Preview">
   </div>
 </div>
 
@@ -1040,11 +1313,14 @@ let currentAssistantText = '';
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 let botConnected = false;
+let pendingFile = null;  // { file: File, previewUrl: string|null }
+
+// ===== Multi-session State =====
 let currentSessionId = null;
 let sessionList = [];        // [{id, number}, ...]
-let sessionMessages = {};    // sessionId -> innerHTML of messages-list
-let sessionMeta = {};        // sessionId -> { createdAt, preview }
-let drawerPinned = localStorage.getItem('astron-drawer-pinned') === '1';
+let sessionMessages = {};    // sessionId -> innerHTML snapshot
+let sessionMeta = {};        // sessionId -> {preview, timestamp}
+let drawerPinned = false;
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_BASE_DELAY = 1000;
@@ -1288,10 +1564,14 @@ function disconnect() {
   isStreaming = false;
   currentAssistantEl = null;
   currentAssistantText = '';
+  clearPendingFile();
+
+  // Reset session state
   currentSessionId = null;
   sessionList = [];
   sessionMessages = {};
   sessionMeta = {};
+  unpinDrawer();
 
   document.getElementById('chat-screen').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
@@ -1343,28 +1623,17 @@ function handleServerMessage(msg) {
     case 'bot_status':
       handleBotStatus(msg.connected);
       break;
+    case 'message':
+      handleMediaMessage(msg);
+      break;
     case 'session_info':
-      currentSessionId = msg.sessionId;
-      sessionList = msg.sessions || [];
-      sessionList.forEach(s => {
-        if (!sessionMeta[s.id]) sessionMeta[s.id] = { createdAt: Date.now(), preview: '' };
-      });
-      renderSessionPanel();
+      handleSessionInfo(msg);
       break;
     case 'new_session_ack':
-      currentSessionId = msg.sessionId;
-      sessionList = msg.sessions || [];
-      sessionMeta[msg.sessionId] = { createdAt: Date.now(), preview: '' };
-      document.getElementById('messages-list').innerHTML = '';
-      addSystemMessage('New session started');
-      renderSessionPanel();
+      handleNewSessionAck(msg);
       break;
     case 'switch_session_ack':
-      currentSessionId = msg.sessionId;
-      sessionList = msg.sessions || [];
-      restoreSessionMessages(msg.sessionId);
-      renderSessionPanel();
-      if (!drawerPinned) hideSessionPanel();
+      handleSwitchSessionAck(msg);
       break;
     default:
       console.log('Unknown message type:', msg.type);
@@ -1421,6 +1690,30 @@ function handleToolCall(name, input) {
   scrollToBottom();
 }
 
+function handleToolResult(content) {
+  // Tool results may appear between chunks; don't finalize stream yet.
+  // Display as a collapsible block similar to tool_call.
+  const list = document.getElementById('messages-list');
+  const block = document.createElement('div');
+  block.className = 'tool-block';
+
+  let formatted = content;
+  try {
+    const parsed = JSON.parse(content);
+    formatted = JSON.stringify(parsed, null, 2);
+  } catch { /* keep original */ }
+
+  block.innerHTML = `
+    <div class="tool-header">
+      <span class="tool-icon">&#9881;</span>
+      <span>Tool Result</span>
+    </div>
+    <div class="tool-body">${escapeHtml(formatted)}</div>
+  `;
+  list.appendChild(block);
+  scrollToBottom();
+}
+
 function handleDone() {
   finalizeStream();
   setInputEnabled(true);
@@ -1444,6 +1737,37 @@ function handleBotStatus(connected) {
     banner.className = 'bot-banner disconnected';
   }
   banner.classList.remove('hidden');
+}
+
+function handleMediaMessage(msg) {
+  finalizeStream();
+  const msgType = msg.msgType || 'file';
+  const media = msg.media;
+  const caption = msg.content || '';
+
+  const list = document.getElementById('messages-list');
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'message assistant';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+
+  if (media && media.downloadUrl) {
+    bubble.innerHTML = renderMediaContent(msgType, media, false);
+  }
+
+  if (caption) {
+    bubble.innerHTML += `<div class="media-caption">${renderMarkdown(caption)}</div>`;
+  }
+
+  const time = document.createElement('div');
+  time.className = 'message-time';
+  time.textContent = formatTime(new Date());
+
+  msgDiv.appendChild(bubble);
+  msgDiv.appendChild(time);
+  list.appendChild(msgDiv);
+  scrollToBottom();
 }
 
 // ===== Rendering Helpers =====
@@ -1498,6 +1822,53 @@ function addUserMessage(text) {
   msgDiv.appendChild(time);
   list.appendChild(msgDiv);
   scrollToBottom();
+
+  // Update session meta for drawer preview
+  if (currentSessionId) {
+    sessionMeta[currentSessionId] = { preview: text.slice(0, 50), timestamp: Date.now() };
+  }
+}
+
+function addUserMediaMessage(msgType, file, caption, media) {
+  const list = document.getElementById('messages-list');
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'message user';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+
+  // For the user's own message, show a local preview
+  if (msgType === 'image') {
+    const localUrl = URL.createObjectURL(file);
+    bubble.innerHTML = `<img class="media-image" src="${localUrl}" alt="${escapeHtml(file.name)}" onclick="openLightbox(this.src)">`;
+  } else if (msgType === 'audio') {
+    const localUrl = URL.createObjectURL(file);
+    bubble.innerHTML = `<audio class="media-audio" controls preload="none"><source src="${localUrl}" type="${escapeHtml(file.type)}"></audio>`;
+  } else if (msgType === 'video') {
+    const localUrl = URL.createObjectURL(file);
+    bubble.innerHTML = `<video class="media-video" controls preload="metadata"><source src="${localUrl}" type="${escapeHtml(file.type)}"></video>`;
+  } else {
+    bubble.innerHTML = `<div class="media-file-card">
+      <span class="media-file-icon">&#128196;</span>
+      <div class="media-file-info">
+        <div class="media-file-name">${escapeHtml(file.name)}</div>
+        <div class="media-file-size">${formatFileSize(file.size)}</div>
+      </div>
+    </div>`;
+  }
+
+  if (caption) {
+    bubble.innerHTML += `<div class="media-caption">${escapeHtml(caption)}</div>`;
+  }
+
+  const time = document.createElement('div');
+  time.className = 'message-time';
+  time.textContent = formatTime(new Date());
+
+  msgDiv.appendChild(bubble);
+  msgDiv.appendChild(time);
+  list.appendChild(msgDiv);
+  scrollToBottom();
 }
 
 function addSystemMessage(text, isError) {
@@ -1513,24 +1884,241 @@ function formatTime(date) {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+// ===== Media Helpers =====
+function getHttpBaseUrl() {
+  let base = serverUrl;
+  if (base.startsWith('ws://')) base = 'http://' + base.slice(5);
+  else if (base.startsWith('wss://')) base = 'https://' + base.slice(6);
+  // Remove /bridge/chat path suffix if present
+  base = base.replace(/\/bridge\/chat\/?$/, '');
+  return base;
+}
+
+function getMediaUrl(downloadUrl) {
+  return getHttpBaseUrl() + downloadUrl + '?token=' + encodeURIComponent(token);
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function getMsgTypeFromMime(mimeType) {
+  if (!mimeType) return 'file';
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+function renderMediaContent(msgType, media, isUser) {
+  const url = getMediaUrl(media.downloadUrl);
+  const fileName = escapeHtml(media.fileName || 'file');
+  const fileSize = formatFileSize(media.fileSize);
+  const safeUrl = url.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+
+  switch (msgType) {
+    case 'image':
+      return `<img class="media-image" src="${safeUrl}" alt="${fileName}" onclick="openLightbox(this.src)" loading="lazy">`;
+    case 'audio':
+      return `<audio class="media-audio" controls preload="none"><source src="${safeUrl}" type="${escapeHtml(media.mimeType || '')}">Your browser does not support audio.</audio>`;
+    case 'video':
+      return `<video class="media-video" controls preload="metadata"><source src="${safeUrl}" type="${escapeHtml(media.mimeType || '')}">Your browser does not support video.</video>`;
+    default:
+      return `<div class="media-file-card">
+        <span class="media-file-icon">&#128196;</span>
+        <div class="media-file-info">
+          <div class="media-file-name">${fileName}</div>
+          ${fileSize ? '<div class="media-file-size">' + fileSize + '</div>' : ''}
+        </div>
+        <a class="media-file-download" href="${safeUrl}" download="${fileName}" title="Download">&#8595;</a>
+      </div>`;
+  }
+}
+
+// ===== File Selection & Preview =====
+function handleFileSelect(files) {
+  if (!files || files.length === 0) return;
+  const file = files[0];
+  setPendingFile(file);
+  // Reset the file input so the same file can be re-selected
+  document.getElementById('file-input').value = '';
+}
+
+function setPendingFile(file) {
+  clearPendingFile();
+  const previewEl = document.getElementById('file-preview');
+  const isImage = file.type.startsWith('image/');
+  let previewUrl = null;
+
+  if (isImage) {
+    previewUrl = URL.createObjectURL(file);
+  }
+
+  pendingFile = { file, previewUrl };
+
+  let thumbHtml;
+  if (isImage && previewUrl) {
+    thumbHtml = `<img class="file-preview-thumb" src="${previewUrl}" alt="Preview">`;
+  } else {
+    thumbHtml = `<div class="file-preview-thumb" style="display:flex;align-items:center;justify-content:center;font-size:22px;">&#128196;</div>`;
+  }
+
+  previewEl.innerHTML = `
+    ${thumbHtml}
+    <div class="file-preview-info">
+      <div class="file-preview-name">${escapeHtml(file.name)}</div>
+      <div class="file-preview-size">${formatFileSize(file.size)}</div>
+    </div>
+    <button class="file-preview-remove" onclick="clearPendingFile()" title="Remove">&#10005;</button>
+  `;
+  previewEl.classList.remove('hidden');
+}
+
+function clearPendingFile() {
+  if (pendingFile && pendingFile.previewUrl) {
+    URL.revokeObjectURL(pendingFile.previewUrl);
+  }
+  pendingFile = null;
+  const previewEl = document.getElementById('file-preview');
+  previewEl.innerHTML = '';
+  previewEl.classList.add('hidden');
+}
+
+// ===== Upload =====
+async function uploadFile(file) {
+  const base = getHttpBaseUrl();
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const resp = await fetch(base + '/api/media/upload', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token },
+    body: formData,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error('Upload failed: ' + (text || resp.statusText));
+  }
+
+  return await resp.json();
+}
+
+// ===== Lightbox =====
+function openLightbox(url) {
+  const lb = document.getElementById('lightbox');
+  const img = document.getElementById('lightbox-img');
+  img.src = url;
+  lb.classList.remove('hidden');
+}
+
+function closeLightbox() {
+  const lb = document.getElementById('lightbox');
+  lb.classList.add('hidden');
+  document.getElementById('lightbox-img').src = '';
+}
+
+// ===== Drag and Drop =====
+(function setupDragDrop() {
+  let dragCounter = 0;
+
+  document.addEventListener('DOMContentLoaded', function() {
+    const container = document.getElementById('messages-container');
+    if (!container) return;
+
+    container.addEventListener('dragenter', function(e) {
+      e.preventDefault();
+      dragCounter++;
+      if (dragCounter === 1) showDragOverlay();
+    });
+
+    container.addEventListener('dragleave', function(e) {
+      e.preventDefault();
+      dragCounter--;
+      if (dragCounter <= 0) { dragCounter = 0; hideDragOverlay(); }
+    });
+
+    container.addEventListener('dragover', function(e) {
+      e.preventDefault();
+    });
+
+    container.addEventListener('drop', function(e) {
+      e.preventDefault();
+      dragCounter = 0;
+      hideDragOverlay();
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        handleFileSelect(e.dataTransfer.files);
+      }
+    });
+  });
+
+  function showDragOverlay() {
+    const container = document.getElementById('messages-container');
+    if (container.querySelector('.drag-overlay')) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'drag-overlay';
+    overlay.innerHTML = '<div class="drag-overlay-text">Drop file to attach</div>';
+    container.appendChild(overlay);
+  }
+
+  function hideDragOverlay() {
+    const container = document.getElementById('messages-container');
+    const overlay = container.querySelector('.drag-overlay');
+    if (overlay) overlay.remove();
+  }
+})();
+
 // ===== Sending =====
 function sendMessage() {
   const input = document.getElementById('msg-input');
   const text = input.value.trim();
-  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const hasFile = !!pendingFile;
 
-  addUserMessage(text);
-  ws.send(JSON.stringify({ type: 'message', content: text }));
+  if ((!text && !hasFile) || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  if (currentSessionId && sessionMeta[currentSessionId]) {
-    sessionMeta[currentSessionId].preview = text.slice(0, 40);
-    renderSessionPanel();
+  if (hasFile) {
+    const file = pendingFile.file;
+    const caption = text;
+    clearPendingFile();
+    input.value = '';
+    input.style.height = 'auto';
+    setInputEnabled(false);
+
+    // Show user message with a sending placeholder
+    const msgType = getMsgTypeFromMime(file.type);
+    addUserMediaMessage(msgType, file, caption, null);
+
+    uploadFile(file).then(function(result) {
+      // Send the media message via WebSocket
+      const wsMsg = {
+        type: 'message',
+        msgType: msgType,
+        content: caption,
+        media: {
+          mediaId: result.mediaId,
+          fileName: result.fileName,
+          mimeType: result.mimeType,
+          fileSize: result.fileSize,
+          downloadUrl: result.downloadUrl,
+        }
+      };
+      ws.send(JSON.stringify(wsMsg));
+      setInputEnabled(true);
+    }).catch(function(err) {
+      addSystemMessage('File upload failed: ' + err.message, true);
+      setInputEnabled(true);
+    });
+  } else {
+    addUserMessage(text);
+    ws.send(JSON.stringify({ type: 'message', content: text }));
+    input.value = '';
+    input.style.height = 'auto';
+    setInputEnabled(false);
+    scrollToBottom();
   }
-
-  input.value = '';
-  input.style.height = 'auto';
-  setInputEnabled(false);
-  scrollToBottom();
 }
 
 function newSession() {
@@ -1685,6 +2273,163 @@ function copyCode(id) {
   }).catch(() => {});
 }
 
+// ===== Multi-session Handling =====
+function handleSessionInfo(msg) {
+  currentSessionId = msg.sessionId;
+  sessionList = msg.sessions || [];
+  if (!sessionMessages[currentSessionId]) {
+    sessionMessages[currentSessionId] = '';
+    sessionMeta[currentSessionId] = { preview: '', timestamp: Date.now() };
+  }
+  renderSessionPanel();
+}
+
+function handleNewSessionAck(msg) {
+  saveCurrentSessionMessages();
+  currentSessionId = msg.sessionId;
+  sessionList = msg.sessions || [];
+  sessionMessages[currentSessionId] = '';
+  sessionMeta[currentSessionId] = { preview: '', timestamp: Date.now() };
+  document.getElementById('messages-list').innerHTML = '';
+  finalizeStream();
+  setInputEnabled(true);
+  renderSessionPanel();
+}
+
+function handleSwitchSessionAck(msg) {
+  saveCurrentSessionMessages();
+  currentSessionId = msg.sessionId;
+  sessionList = msg.sessions || [];
+  restoreSessionMessages(currentSessionId);
+  finalizeStream();
+  setInputEnabled(true);
+  renderSessionPanel();
+}
+
+function newSession() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'new_session' }));
+  }
+}
+
+function switchSession(id) {
+  if (id === currentSessionId) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'switch_session', sessionId: id }));
+  }
+}
+
+function saveCurrentSessionMessages() {
+  if (!currentSessionId) return;
+  const list = document.getElementById('messages-list');
+  sessionMessages[currentSessionId] = list.innerHTML;
+  // Update meta with last user message preview
+  const userBubbles = list.querySelectorAll('.message.user .message-bubble');
+  if (userBubbles.length > 0) {
+    const lastBubble = userBubbles[userBubbles.length - 1];
+    sessionMeta[currentSessionId] = {
+      preview: lastBubble.textContent.slice(0, 50),
+      timestamp: Date.now(),
+    };
+  }
+}
+
+function restoreSessionMessages(id) {
+  const list = document.getElementById('messages-list');
+  list.innerHTML = sessionMessages[id] || '';
+  scrollToBottom();
+}
+
+// ===== Session Drawer =====
+function toggleSessionPanel() {
+  const drawer = document.getElementById('session-drawer');
+  const overlay = document.getElementById('session-overlay');
+  if (drawerPinned) {
+    unpinDrawer();
+    return;
+  }
+  const isOpen = drawer.classList.contains('open');
+  if (isOpen) {
+    hideSessionPanel();
+  } else {
+    drawer.classList.add('open');
+    overlay.classList.add('visible');
+    renderSessionPanel();
+  }
+}
+
+function hideSessionPanel() {
+  if (drawerPinned) return;
+  document.getElementById('session-drawer').classList.remove('open');
+  document.getElementById('session-overlay').classList.remove('visible');
+}
+
+function togglePinDrawer() {
+  if (drawerPinned) {
+    unpinDrawer();
+  } else {
+    pinDrawer();
+  }
+}
+
+function pinDrawer() {
+  drawerPinned = true;
+  document.body.classList.add('drawer-pinned');
+  document.getElementById('session-drawer').classList.add('open');
+  document.getElementById('session-overlay').classList.remove('visible');
+  document.getElementById('pin-btn').classList.add('active');
+  localStorage.setItem('astron-drawer-pinned', '1');
+}
+
+function unpinDrawer() {
+  drawerPinned = false;
+  document.body.classList.remove('drawer-pinned');
+  document.getElementById('session-drawer').classList.remove('open');
+  document.getElementById('session-overlay').classList.remove('visible');
+  document.getElementById('pin-btn').classList.remove('active');
+  localStorage.removeItem('astron-drawer-pinned');
+}
+
+function restoreDrawerState() {
+  if (localStorage.getItem('astron-drawer-pinned') === '1') {
+    pinDrawer();
+  }
+}
+
+function renderSessionPanel() {
+  const listEl = document.getElementById('session-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  // Show sessions in reverse order (newest first)
+  const items = [...sessionList].reverse();
+  for (const s of items) {
+    const isActive = s.id === currentSessionId;
+    const meta = sessionMeta[s.id] || {};
+    const preview = meta.preview || 'No messages yet';
+    const timeStr = meta.timestamp ? relativeTime(meta.timestamp) : '';
+    const div = document.createElement('div');
+    div.className = 'session-item' + (isActive ? ' active' : '');
+    div.onclick = function() { switchSession(s.id); };
+    div.innerHTML = `
+      <div class="session-item-icon">&#128172;</div>
+      <div class="session-item-info">
+        <div class="session-item-title">Session ${s.number}</div>
+        <div class="session-item-preview">${escapeHtml(preview)}</div>
+      </div>
+      <div class="session-item-time">${escapeHtml(timeStr)}</div>
+    `;
+    listEl.appendChild(div);
+  }
+}
+
+function relativeTime(ts) {
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 60) return 'now';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h';
+  return Math.floor(diff / 86400) + 'd';
+}
+
 // ===== Init =====
 document.getElementById('token-input').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') handleConnect();
@@ -1692,6 +2437,10 @@ document.getElementById('token-input').addEventListener('keydown', function(e) {
 
 document.getElementById('server-input').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') handleConnect();
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeLightbox();
 });
 </script>
 </body>

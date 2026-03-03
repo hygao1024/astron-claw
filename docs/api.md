@@ -16,7 +16,7 @@ Chat Client ──WebSocket──► Bridge Server ◄──WebSocket── Bot 
 ### Base URL
 
 ```
-http://129.211.5.25:8765
+http://127.0.0.1:8765
 ```
 
 ### 认证方式
@@ -25,6 +25,7 @@ http://129.211.5.25:8765
 |---------|---------|
 | Token 接口 (`/api/token/*`) | 无需认证 |
 | Admin 接口 (`/api/admin/*`) | Cookie `admin_session`（登录后自动携带） |
+| Media 接口 (`/api/media/*`) | `Authorization: Bearer <token>` 或 Query 参数 `token` |
 | WebSocket (`/bridge/*`) | Query 参数 `token` 或请求头 `X-Astron-Bot-Token` |
 
 ---
@@ -49,14 +50,18 @@ http://129.211.5.25:8765
   - [4.1 连接](#41-连接)
   - [4.2 客户端发送消息](#42-客户端发送消息)
   - [4.3 服务端推送消息](#43-服务端推送消息)
-  - [4.4 交互时序](#44-交互时序)
-  - [4.5 接入示例](#45-接入示例)
+  - [4.4 会话管理](#44-会话管理)
+  - [4.5 交互时序](#45-交互时序)
+  - [4.6 接入示例](#46-接入示例)
 - [5. WebSocket — Bot 插件](#5-websocket--bot-插件)
   - [5.1 连接](#51-连接)
   - [5.2 接收用户请求](#52-接收用户请求)
   - [5.3 发送流式更新](#53-发送流式更新)
   - [5.4 发送回复完成](#54-发送回复完成)
   - [5.5 接入示例](#55-接入示例)
+- [6. Media 接口](#6-media-接口)
+  - [6.1 上传媒体文件](#61-上传媒体文件)
+  - [6.2 下载媒体文件](#62-下载媒体文件)
 
 ---
 
@@ -89,13 +94,13 @@ POST /api/token
 **测试代码：**
 
 ```bash
-curl -X POST http://129.211.5.25:8765/api/token
+curl -X POST http://127.0.0.1:8765/api/token
 ```
 
 ```python
 import requests
 
-resp = requests.post("http://129.211.5.25:8765/api/token")
+resp = requests.post("http://127.0.0.1:8765/api/token")
 print(resp.json())
 # {'token': 'sk-a1b2c3d4e5f6...'}
 ```
@@ -147,7 +152,7 @@ POST /api/token/validate
 **测试代码：**
 
 ```bash
-curl -X POST http://129.211.5.25:8765/api/token/validate \
+curl -X POST http://127.0.0.1:8765/api/token/validate \
   -H "Content-Type: application/json" \
   -d '{"token": "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"}'
 ```
@@ -155,7 +160,7 @@ curl -X POST http://129.211.5.25:8765/api/token/validate \
 ```python
 import requests
 
-resp = requests.post("http://129.211.5.25:8765/api/token/validate", json={
+resp = requests.post("http://127.0.0.1:8765/api/token/validate", json={
     "token": "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
 })
 data = resp.json()
@@ -200,13 +205,13 @@ GET /api/admin/auth/status
 **测试代码：**
 
 ```bash
-curl http://129.211.5.25:8765/api/admin/auth/status
+curl http://127.0.0.1:8765/api/admin/auth/status
 ```
 
 ```python
 import requests
 
-resp = requests.get("http://129.211.5.25:8765/api/admin/auth/status")
+resp = requests.get("http://127.0.0.1:8765/api/admin/auth/status")
 print(resp.json())
 # {'need_setup': False, 'authenticated': False}
 ```
@@ -255,7 +260,7 @@ POST /api/admin/auth/setup
 **测试代码：**
 
 ```bash
-curl -X POST http://129.211.5.25:8765/api/admin/auth/setup \
+curl -X POST http://127.0.0.1:8765/api/admin/auth/setup \
   -H "Content-Type: application/json" \
   -d '{"password": "your_password"}' \
   -c cookies.txt
@@ -265,7 +270,7 @@ curl -X POST http://129.211.5.25:8765/api/admin/auth/setup \
 import requests
 
 session = requests.Session()
-resp = session.post("http://129.211.5.25:8765/api/admin/auth/setup", json={
+resp = session.post("http://127.0.0.1:8765/api/admin/auth/setup", json={
     "password": "your_password"
 })
 print(resp.json())
@@ -317,13 +322,13 @@ POST /api/admin/auth/login
 
 ```bash
 # 登录并保存 cookie
-curl -X POST http://129.211.5.25:8765/api/admin/auth/login \
+curl -X POST http://127.0.0.1:8765/api/admin/auth/login \
   -H "Content-Type: application/json" \
   -d '{"password": "your_password"}' \
   -c cookies.txt
 
 # 后续请求携带 cookie
-curl http://129.211.5.25:8765/api/admin/tokens -b cookies.txt
+curl http://127.0.0.1:8765/api/admin/tokens -b cookies.txt
 ```
 
 ```python
@@ -332,13 +337,13 @@ import requests
 session = requests.Session()
 
 # 登录
-resp = session.post("http://129.211.5.25:8765/api/admin/auth/login", json={
+resp = session.post("http://127.0.0.1:8765/api/admin/auth/login", json={
     "password": "your_password"
 })
 print(resp.json())  # {'ok': True}
 
 # 后续请求自动携带 cookie
-resp = session.get("http://129.211.5.25:8765/api/admin/tokens")
+resp = session.get("http://127.0.0.1:8765/api/admin/tokens")
 print(resp.json())  # {'tokens': [...]}
 ```
 
@@ -363,11 +368,11 @@ POST /api/admin/auth/logout
 **测试代码：**
 
 ```bash
-curl -X POST http://129.211.5.25:8765/api/admin/auth/logout -b cookies.txt
+curl -X POST http://127.0.0.1:8765/api/admin/auth/logout -b cookies.txt
 ```
 
 ```python
-resp = session.post("http://129.211.5.25:8765/api/admin/auth/logout")
+resp = session.post("http://127.0.0.1:8765/api/admin/auth/logout")
 print(resp.json())  # {'ok': True}
 ```
 
@@ -424,11 +429,11 @@ GET /api/admin/tokens
 **测试代码：**
 
 ```bash
-curl http://129.211.5.25:8765/api/admin/tokens -b cookies.txt
+curl http://127.0.0.1:8765/api/admin/tokens -b cookies.txt
 ```
 
 ```python
-resp = session.get("http://129.211.5.25:8765/api/admin/tokens")
+resp = session.get("http://127.0.0.1:8765/api/admin/tokens")
 for t in resp.json()["tokens"]:
     status = "online" if t["bot_online"] else "offline"
     print(f"{t['token'][:10]}... | Bot: {status} | Chats: {t['chat_count']}")
@@ -477,14 +482,14 @@ POST /api/admin/tokens
 **测试代码：**
 
 ```bash
-curl -X POST http://129.211.5.25:8765/api/admin/tokens \
+curl -X POST http://127.0.0.1:8765/api/admin/tokens \
   -H "Content-Type: application/json" \
   -d '{"name": "My Bot", "expires_in": 604800}' \
   -b cookies.txt
 ```
 
 ```python
-resp = session.post("http://129.211.5.25:8765/api/admin/tokens", json={
+resp = session.post("http://127.0.0.1:8765/api/admin/tokens", json={
     "name": "My Bot",
     "expires_in": 604800  # 7 天
 })
@@ -542,7 +547,7 @@ PATCH /api/admin/tokens/{token_value}
 **测试代码：**
 
 ```bash
-curl -X PATCH http://129.211.5.25:8765/api/admin/tokens/sk-a1b2c3d4e5f6... \
+curl -X PATCH http://127.0.0.1:8765/api/admin/tokens/sk-a1b2c3d4e5f6... \
   -H "Content-Type: application/json" \
   -d '{"name": "New Name", "expires_in": 604800}' \
   -b cookies.txt
@@ -550,7 +555,7 @@ curl -X PATCH http://129.211.5.25:8765/api/admin/tokens/sk-a1b2c3d4e5f6... \
 
 ```python
 token = "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
-resp = session.patch(f"http://129.211.5.25:8765/api/admin/tokens/{token}", json={
+resp = session.patch(f"http://127.0.0.1:8765/api/admin/tokens/{token}", json={
     "name": "New Name",
     "expires_in": 604800  # 续期 7 天
 })
@@ -582,12 +587,12 @@ DELETE /api/admin/tokens/{token_value}
 **测试代码：**
 
 ```bash
-curl -X DELETE http://129.211.5.25:8765/api/admin/tokens/sk-a1b2c3d4e5f6... -b cookies.txt
+curl -X DELETE http://127.0.0.1:8765/api/admin/tokens/sk-a1b2c3d4e5f6... -b cookies.txt
 ```
 
 ```python
 token = "sk-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
-resp = session.delete(f"http://129.211.5.25:8765/api/admin/tokens/{token}")
+resp = session.delete(f"http://127.0.0.1:8765/api/admin/tokens/{token}")
 print(resp.json())  # {'ok': True}
 ```
 
@@ -607,23 +612,24 @@ POST /api/admin/cleanup
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `removed` | integer | 已删除的过期 Token 数量 |
+| `removed_tokens` | integer | 已删除的过期 Token 数量 |
+| `removed_media` | integer | 已删除的过期媒体文件数量 |
 
 **响应示例：**
 
 ```json
-{"removed": 3}
+{"removed_tokens": 3, "removed_media": 5}
 ```
 
 **测试代码：**
 
 ```bash
-curl -X POST http://129.211.5.25:8765/api/admin/cleanup -b cookies.txt
+curl -X POST http://127.0.0.1:8765/api/admin/cleanup -b cookies.txt
 ```
 
 ```python
-resp = session.post("http://129.211.5.25:8765/api/admin/cleanup")
-print(f"Removed {resp.json()['removed']} expired tokens")
+resp = session.post("http://127.0.0.1:8765/api/admin/cleanup")
+print(f"Removed {resp.json()['removed_tokens']} tokens, {resp.json()['removed_media']} media files")
 ```
 
 ---
@@ -655,40 +661,47 @@ ws://{host}:{port}/bridge/chat?token={token}
 
 客户端通过 WebSocket 发送 JSON 文本帧。
 
-#### `message` — 发送用户消息
+#### 文本消息
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `type` | string | 是 | 固定为 `"message"` |
+| `msgType` | string | 否 | 消息类型，默认 `"text"` |
 | `content` | string | 是 | 用户消息文本，不能为空 |
 
 ```json
 {"type": "message", "content": "你好，请帮我写一段代码"}
 ```
 
-#### `new_session` — 新建会话
+#### 媒体消息
 
-创建一个新会话并设为当前活跃会话。服务端返回 `new_session_ack`。
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `type` | string | 是 | 固定为 `"new_session"` |
-
-```json
-{"type": "new_session"}
-```
-
-#### `switch_session` — 切换会话
-
-切换到一个已有的会话。服务端返回 `switch_session_ack`，失败返回 `error`。
+发送图片、文件等媒体消息前，需先通过 [Media 上传接口](#61-上传媒体文件) 上传文件获取 `mediaId`。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `type` | string | 是 | 固定为 `"switch_session"` |
-| `sessionId` | string | 是 | 目标会话 ID |
+| `type` | string | 是 | 固定为 `"message"` |
+| `msgType` | string | 是 | 媒体类型：`"image"` / `"file"` / `"audio"` / `"video"` |
+| `content` | string | 否 | 附带的文本描述 |
+| `media` | object | 是 | 媒体信息 |
+| `media.mediaId` | string | 是 | 上传后获得的媒体 ID |
+| `media.fileName` | string | 否 | 文件名 |
+| `media.mimeType` | string | 否 | MIME 类型 |
+| `media.fileSize` | integer | 否 | 文件大小（字节） |
+
+**示例：**
 
 ```json
-{"type": "switch_session", "sessionId": "550e8400-e29b-41d4-a716-446655440000"}
+{
+  "type": "message",
+  "msgType": "image",
+  "content": "",
+  "media": {
+    "mediaId": "abc123",
+    "fileName": "photo.jpg",
+    "mimeType": "image/jpeg",
+    "fileSize": 102400
+  }
+}
 ```
 
 ---
@@ -814,16 +827,28 @@ Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
 {"type": "tool_call", "name": "Read file", "input": "src/main.py"}
 ```
 
+#### `tool_result` — 工具执行结果
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"tool_result"` |
+| `content` | string | 工具执行结果文本 |
+
+```json
+{"type": "tool_result", "content": "Tool output: success"}
+```
+
 #### `done` — 本轮回复结束
 
-收到此消息表示 Bot 对当前提问的回复已完成。
+收到此消息表示 Bot 对当前提问的回复已完成。`content` 字段可选，包含最终完整文本。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `type` | string | `"done"` |
+| `content` | string | 最终完整回复文本（可选，可为空） |
 
 ```json
-{"type": "done"}
+{"type": "done", "content": "完整的回复文本"}
 ```
 
 #### `error` — 错误
@@ -841,13 +866,142 @@ Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
 
 | content | 说明 |
 |---------|------|
-| `Empty message` | 发送了空消息 |
+| `Empty message` | 发送了空文本消息 |
+| `Missing media info` | 媒体消息缺少 media 对象 |
 | `No bot connected` | 当前 Token 没有 Bot 在线 |
 | `Failed to send to bot` | 发送到 Bot 失败 |
 
+#### `message` — Bot 发送的媒体消息
+
+Bot 发送的带媒体附件的消息（通过 `agent_media` update type 触发）。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"message"` |
+| `msgType` | string | 媒体类型：`"image"` / `"file"` / `"audio"` / `"video"` |
+| `content` | string | 附带文本（可为空） |
+| `media` | object | 媒体信息 |
+| `media.mediaId` | string | 媒体文件 ID |
+| `media.fileName` | string | 文件名 |
+| `media.mimeType` | string | MIME 类型 |
+| `media.fileSize` | integer | 文件大小（字节） |
+| `media.downloadUrl` | string | 下载路径 |
+
+```json
+{
+  "type": "message",
+  "msgType": "image",
+  "content": "",
+  "media": {
+    "mediaId": "abc123",
+    "fileName": "output.png",
+    "mimeType": "image/png",
+    "fileSize": 204800,
+    "downloadUrl": "/api/media/download/abc123"
+  }
+}
+```
+
+#### `session_info` — 会话信息（连接后推送）
+
+连接成功后紧随 `bot_status` 推送，包含初始会话和已有会话列表。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"session_info"` |
+| `sessionId` | string | 当前活跃会话 ID |
+| `sessionNumber` | integer | 当前会话编号 |
+| `sessions` | array | 所有会话列表 `[{id, number}, ...]` |
+| `activeSessionId` | string | 活跃会话 ID |
+
+```json
+{
+  "type": "session_info",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "sessionNumber": 1,
+  "sessions": [{"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1}],
+  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+#### `new_session_ack` — 新建会话确认
+
+客户端发送 `new_session` 后收到的确认消息。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"new_session_ack"` |
+| `sessionId` | string | 新建会话 ID |
+| `sessionNumber` | integer | 新会话编号 |
+| `sessions` | array | 更新后的所有会话列表 |
+| `activeSessionId` | string | 活跃会话 ID（即新建的会话） |
+
+```json
+{
+  "type": "new_session_ack",
+  "sessionId": "660e8400-e29b-41d4-a716-446655440001",
+  "sessionNumber": 2,
+  "sessions": [
+    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
+    {"id": "660e8400-e29b-41d4-a716-446655440001", "number": 2}
+  ],
+  "activeSessionId": "660e8400-e29b-41d4-a716-446655440001"
+}
+```
+
+#### `switch_session_ack` — 切换会话确认
+
+客户端发送 `switch_session` 后收到的确认消息。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | string | `"switch_session_ack"` |
+| `sessionId` | string | 切换到的会话 ID |
+| `sessions` | array | 所有会话列表 |
+| `activeSessionId` | string | 活跃会话 ID |
+
+```json
+{
+  "type": "switch_session_ack",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "sessions": [
+    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
+    {"id": "660e8400-e29b-41d4-a716-446655440001", "number": 2}
+  ],
+  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
 ---
 
-### 4.4 交互时序
+### 4.4 会话管理
+
+Chat 客户端支持多会话管理。每个 Token 连接后会自动创建第一个会话，之后可以创建新会话或在已有会话之间切换。不同会话的消息通过不同的 `sessionId` 路由到 Bot，Bot 端会自动隔离不同会话的上下文。
+
+#### 新建会话
+
+```json
+{"type": "new_session"}
+```
+
+服务端响应 `new_session_ack`，客户端应清空消息列表并保存当前会话的消息快照。
+
+#### 切换会话
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `type` | string | 是 | 固定为 `"switch_session"` |
+| `sessionId` | string | 是 | 要切换到的会话 ID |
+
+```json
+{"type": "switch_session", "sessionId": "550e8400-e29b-41d4-a716-446655440000"}
+```
+
+服务端响应 `switch_session_ack`（成功）或 `error`（会话不存在）。
+
+---
+
+### 4.5 交互时序
 
 ```
 Client                          Server                          Bot
@@ -858,7 +1012,6 @@ Client                          Server                          Bot
   │                               │                              │
   ├── {"type":"message"} ────────►│── JSON-RPC request ─────────►│
   │                               │                              │
-  │◄── {"type":"thinking"} ───────┤◄── session/update ───────────┤
   │◄── {"type":"thinking"} ───────┤◄── session/update ───────────┤
   │◄── {"type":"tool_call"} ──────┤◄── session/update ───────────┤
   │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
@@ -875,12 +1028,12 @@ Client                          Server                          Bot
 
 ---
 
-### 4.5 接入示例
+### 4.6 接入示例
 
 #### JavaScript
 
 ```javascript
-const ws = new WebSocket('ws://129.211.5.25:8765/bridge/chat?token=sk-xxx');
+const ws = new WebSocket('ws://127.0.0.1:8765/bridge/chat?token=sk-xxx');
 
 let botOnline = false;
 let assistantText = '';
@@ -909,6 +1062,10 @@ ws.onmessage = (event) => {
 
     case 'tool_call':
       console.log(`\n[Tool: ${msg.name}] ${msg.input}`);
+      break;
+
+    case 'tool_result':
+      console.log(`\n[Tool Result] ${msg.content}`);
       break;
 
     case 'done':
@@ -946,7 +1103,7 @@ import websockets
 
 
 async def chat(token: str, message: str):
-    uri = f"ws://129.211.5.25:8765/bridge/chat?token={token}"
+    uri = f"ws://127.0.0.1:8765/bridge/chat?token={token}"
 
     async with websockets.connect(uri) as ws:
         # 1. 等待 bot_status
@@ -958,11 +1115,16 @@ async def chat(token: str, message: str):
             print("Bot is offline, cannot send message")
             return
 
-        # 2. 发送消息
+        # 2. 等待 session_info
+        raw = await ws.recv()
+        session = json.loads(raw)
+        print(f"Session: {session['sessionId'][:8]}... (#{session['sessionNumber']})")
+
+        # 3. 发送消息
         await ws.send(json.dumps({"type": "message", "content": message}))
         print(f"Sent: {message}")
 
-        # 3. 接收流式回复
+        # 4. 接收流式回复
         reply_text = ""
         thinking_text = ""
 
@@ -979,6 +1141,9 @@ async def chat(token: str, message: str):
 
             elif msg_type == "tool_call":
                 print(f"\n[Tool: {msg['name']}] {msg['input']}")
+
+            elif msg_type == "tool_result":
+                print(f"\n[Tool Result] {msg['content']}")
 
             elif msg_type == "done":
                 print("\n--- Reply complete ---")
@@ -1010,12 +1175,16 @@ import websockets
 
 
 async def multi_turn_chat(token: str):
-    uri = f"ws://129.211.5.25:8765/bridge/chat?token={token}"
+    uri = f"ws://127.0.0.1:8765/bridge/chat?token={token}"
 
     async with websockets.connect(uri) as ws:
         # 等待 bot_status
         status = json.loads(await ws.recv())
-        print(f"Bot online: {status['connected']}\n")
+        print(f"Bot online: {status['connected']}")
+
+        # 等待 session_info
+        session = json.loads(await ws.recv())
+        print(f"Session #{session['sessionNumber']}\n")
 
         while True:
             # 用户输入
@@ -1056,7 +1225,7 @@ asyncio.run(multi_turn_chat("sk-your-token-here"))
 # 安装 websocat: https://github.com/nickel-org/websocat
 # 连接并交互
 echo '{"type":"message","content":"你好"}' | \
-  websocat 'ws://129.211.5.25:8765/bridge/chat?token=sk-xxx'
+  websocat 'ws://127.0.0.1:8765/bridge/chat?token=sk-xxx'
 ```
 
 ---
@@ -1096,10 +1265,17 @@ Token 支持两种传递方式（二选一）：
 | `jsonrpc` | string | 固定 `"2.0"` |
 | `id` | string | 请求唯一标识（`req_` 前缀），回复时需原样返回 |
 | `method` | string | 固定 `"session/prompt"` |
-| `params.sessionId` | string | 会话 ID，不同会话使用不同 ID 以隔离上下文 |
-| `params.prompt.content` | array | 消息内容，`[{"type": "text", "text": "..."}]` |
+| `params.sessionId` | string | 会话 ID，不同会话隔离上下文 |
+| `params.prompt.content` | array | 消息内容项列表 |
 
-**示例：**
+**Content item 类型：**
+
+| type | 字段 | 说明 |
+|------|------|------|
+| `text` | `text` | 文本内容 |
+| `media` | `msgType`, `media` | 媒体内容（图片/文件等） |
+
+**文本消息示例：**
 
 ```json
 {
@@ -1111,6 +1287,35 @@ Token 支持两种传递方式（二选一）：
     "prompt": {
       "content": [
         {"type": "text", "text": "你好，请帮我写一段代码"}
+      ]
+    }
+  }
+}
+```
+
+**媒体消息示例：**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req_b2c3d4e5f6a7",
+  "method": "session/prompt",
+  "params": {
+    "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+    "prompt": {
+      "content": [
+        {"type": "text", "text": "[image]"},
+        {
+          "type": "media",
+          "msgType": "image",
+          "media": {
+            "mediaId": "abc123",
+            "fileName": "photo.jpg",
+            "mimeType": "image/jpeg",
+            "fileSize": 102400,
+            "downloadUrl": "/api/media/download/abc123"
+          }
+        }
       ]
     }
   }
@@ -1141,9 +1346,12 @@ Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
 
 | 类型 | 说明 | Chat 端接收为 |
 |------|------|-------------|
-| `agent_message_chunk` | Bot 回复文本片段 | `chunk` |
+| `agent_message_chunk` | Bot 回复文本片段（token 级别增量） | `chunk` |
+| `agent_message_final` | Bot 回复完成（含最终完整文本） | `done`（含 content） |
 | `agent_thought_chunk` | Bot 思考过程片段 | `thinking` |
 | `tool_call` | 工具调用 | `tool_call` |
+| `tool_result` | 工具执行结果 | `tool_result` |
+| `agent_media` | Bot 发送媒体文件 | `message`（含 media 对象） |
 
 **回复文本片段示例：**
 
@@ -1221,7 +1429,7 @@ import websockets
 
 
 async def bot(token: str):
-    uri = f"ws://129.211.5.25:8765/bridge/bot?token={token}"
+    uri = f"ws://127.0.0.1:8765/bridge/bot?token={token}"
 
     async with websockets.connect(uri) as ws:
         print("Bot connected, waiting for messages...")
@@ -1276,6 +1484,140 @@ asyncio.run(bot("sk-your-token-here"))
 
 ---
 
+## 6. Media 接口
+
+媒体文件上传和下载接口。所有媒体接口需通过 `Authorization: Bearer <token>` 或 Query 参数 `token` 进行认证。
+
+### 6.1 上传媒体文件
+
+上传文件并获取 `mediaId`，用于在 WebSocket 消息中引用。
+
+```
+POST /api/media/upload
+```
+
+**请求头：**
+
+| 头部 | 值 | 说明 |
+|------|------|------|
+| `Authorization` | `Bearer sk-xxx` | Token 认证 |
+| `Content-Type` | `multipart/form-data` | 文件上传 |
+
+**请求体（multipart/form-data）：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `file` | file | 是 | 要上传的文件（最大 50MB） |
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `mediaId` | string | 媒体文件唯一标识 |
+| `fileName` | string | 文件名 |
+| `mimeType` | string | MIME 类型 |
+| `fileSize` | integer | 文件大小（字节） |
+| `downloadUrl` | string | 下载路径 |
+
+**响应示例：**
+
+```json
+{
+  "mediaId": "a1b2c3d4",
+  "fileName": "photo.jpg",
+  "mimeType": "image/jpeg",
+  "fileSize": 102400,
+  "downloadUrl": "/api/media/download/a1b2c3d4"
+}
+```
+
+**错误响应：**
+
+| 状态码 | 说明 |
+|--------|------|
+| `401` | Token 无效或缺失 |
+| `400` | 无效文件或不支持的类型 |
+| `413` | 文件超过大小限制 |
+
+**测试代码：**
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/media/upload \
+  -H "Authorization: Bearer sk-your-token" \
+  -F "file=@photo.jpg"
+```
+
+```python
+import requests
+
+with open("photo.jpg", "rb") as f:
+    resp = requests.post(
+        "http://127.0.0.1:8765/api/media/upload",
+        headers={"Authorization": "Bearer sk-your-token"},
+        files={"file": ("photo.jpg", f, "image/jpeg")},
+    )
+print(resp.json())
+# {'mediaId': 'a1b2c3d4', 'fileName': 'photo.jpg', ...}
+```
+
+---
+
+### 6.2 下载媒体文件
+
+通过 `mediaId` 下载已上传的媒体文件。
+
+```
+GET /api/media/download/{media_id}
+```
+
+**认证方式（二选一）：**
+
+| 方式 | 示例 |
+|------|------|
+| Authorization 头 | `Authorization: Bearer sk-xxx` |
+| Query 参数 | `?token=sk-xxx` |
+
+**路径参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `media_id` | string | 媒体文件 ID |
+
+**响应：**
+
+文件二进制流，`Content-Type` 为文件的 MIME 类型。
+
+**错误响应：**
+
+| 状态码 | 说明 |
+|--------|------|
+| `401` | Token 无效或缺失 |
+| `404` | 媒体文件不存在或已过期 |
+
+**测试代码：**
+
+```bash
+# 通过 Authorization 头
+curl -H "Authorization: Bearer sk-your-token" \
+  http://127.0.0.1:8765/api/media/download/a1b2c3d4 -o photo.jpg
+
+# 通过 Query 参数
+curl "http://127.0.0.1:8765/api/media/download/a1b2c3d4?token=sk-your-token" -o photo.jpg
+```
+
+```python
+import requests
+
+resp = requests.get(
+    "http://127.0.0.1:8765/api/media/download/a1b2c3d4",
+    headers={"Authorization": "Bearer sk-your-token"},
+)
+with open("downloaded.jpg", "wb") as f:
+    f.write(resp.content)
+```
+
+---
+
 ## 错误码汇总
 
 ### HTTP 状态码
@@ -1285,7 +1627,8 @@ asyncio.run(bot("sk-your-token-here"))
 | `200` | 请求成功 |
 | `400` | 请求参数错误 |
 | `401` | 未认证或密码错误 |
-| `404` | 路径不存在 |
+| `404` | 路径不存在或资源未找到 |
+| `413` | 文件超过大小限制 |
 
 ### WebSocket 关闭码
 

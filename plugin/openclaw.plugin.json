@@ -1,57 +1,95 @@
 {
   "id": "astron-claw",
   "name": "astron-claw",
-  "description": "Connector plugin that bridges the Astron server with the local OpenClaw Gateway.",
-  "version": "1.0.0",
+  "description": "AstronClaw channel plugin - connects chat clients via bridge server to OpenClaw.",
+  "version": "2.0.0",
+  "type": "channel",
   "configSchema": {
     "type": "object",
-    "additionalProperties": true,
+    "additionalProperties": false,
     "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Whether the AstronClaw channel is enabled",
+        "default": true
+      },
+      "name": {
+        "type": "string",
+        "description": "Display name for this channel account",
+        "default": "AstronClaw"
+      },
       "bridge": {
         "type": "object",
-        "additionalProperties": true,
+        "description": "Bridge server connection settings",
+        "additionalProperties": false,
         "properties": {
           "url": {
-            "type": "string"
+            "type": "string",
+            "description": "WebSocket URL of the bridge server",
+            "default": "ws://localhost:8765/bridge/bot"
           },
           "token": {
-            "type": "string"
+            "type": "string",
+            "description": "Authentication token for the bridge server"
           }
-        }
+        },
+        "required": ["url"]
       },
-      "gateway": {
+      "allowFrom": {
+        "type": "array",
+        "description": "Sender whitelist for DM. Use [\"*\"] to allow all senders.",
+        "items": {
+          "type": "string"
+        },
+        "default": ["*"]
+      },
+      "media": {
         "type": "object",
-        "additionalProperties": true,
+        "description": "Media handling settings",
+        "additionalProperties": false,
         "properties": {
-          "url": {
-            "type": "string"
+          "maxSize": {
+            "type": "number",
+            "description": "Maximum media file size in bytes",
+            "default": 52428800
           },
-          "protocol": {
-            "type": "number"
-          },
-          "clientId": {
-            "type": "string"
-          },
-          "clientMode": {
-            "type": "string"
-          },
-          "agentId": {
-            "type": "string"
+          "allowedTypes": {
+            "type": "array",
+            "description": "Allowed MIME type patterns for media",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "image/*",
+              "audio/*",
+              "video/*",
+              "application/pdf",
+              "application/zip",
+              "text/plain",
+              "application/octet-stream"
+            ]
           }
         }
       },
       "retry": {
         "type": "object",
-        "additionalProperties": true,
+        "description": "Reconnection retry settings",
+        "additionalProperties": false,
         "properties": {
           "baseMs": {
-            "type": "number"
+            "type": "number",
+            "description": "Initial retry delay in milliseconds",
+            "default": 1000
           },
           "maxMs": {
-            "type": "number"
+            "type": "number",
+            "description": "Maximum retry delay in milliseconds",
+            "default": 60000
           },
           "maxAttempts": {
-            "type": "number"
+            "type": "number",
+            "description": "Maximum number of retry attempts (0 = unlimited)",
+            "default": 0
           }
         }
       }
