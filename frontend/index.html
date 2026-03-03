@@ -477,11 +477,6 @@ html, body {
   overflow-y: auto;
 }
 
-.tool-result .tool-header {
-  color: var(--success);
-  background: rgba(34, 197, 94, 0.06);
-}
-
 /* -- Streaming / Typing -- */
 .typing-indicator {
   display: flex;
@@ -1276,6 +1271,33 @@ body.drawer-pinned .session-overlay {
   </div>
 </div>
 
+<!-- Session Drawer -->
+<div class="session-overlay" id="session-overlay" onclick="hideSessionPanel()"></div>
+<div class="session-drawer" id="session-drawer">
+  <div class="session-drawer-header">
+    <h3>Sessions</h3>
+    <div class="session-drawer-actions">
+      <button class="session-drawer-btn" id="pin-btn" onclick="togglePinDrawer()" title="Pin drawer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 17v5"/><path d="M9 2h6l-1 7h4l-5 8h-2l-5-8h4z"/>
+        </svg>
+      </button>
+      <button class="session-drawer-btn" id="close-drawer-btn" onclick="hideSessionPanel()" title="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <button class="session-new-btn" onclick="newSession()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+    </svg>
+    <span>New Chat</span>
+  </button>
+  <div class="session-drawer-list" id="session-list"></div>
+</div>
+
 <!-- CDN Libraries -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -1340,6 +1362,16 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+function relativeTime(ts) {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return mins + 'm';
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + 'h';
+  return Math.floor(hours / 24) + 'd';
 }
 
 function renderMarkdown(text) {
@@ -1550,6 +1582,10 @@ function disconnect() {
 
   const banner = document.getElementById('bot-banner');
   banner.classList.add('hidden');
+  // Reset drawer DOM state (keep pinned preference in localStorage)
+  document.getElementById('session-drawer').classList.remove('open', 'pinned');
+  document.getElementById('session-overlay').classList.remove('open');
+  document.body.classList.remove('drawer-pinned');
 }
 
 function updateConnectionStatus(connected) {
@@ -1577,9 +1613,6 @@ function handleServerMessage(msg) {
       break;
     case 'tool_call':
       handleToolCall(msg.name || 'unknown', msg.input || '');
-      break;
-    case 'tool_result':
-      handleToolResult(msg.content || '');
       break;
     case 'done':
       handleDone();
@@ -2088,6 +2121,13 @@ function sendMessage() {
   }
 }
 
+function newSession() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  saveCurrentSessionMessages();
+  ws.send(JSON.stringify({ type: 'new_session' }));
+  finalizeStream();
+}
+
 function handleKeyDown(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -2108,6 +2148,108 @@ function setInputEnabled(enabled) {
 function autoGrow(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+}
+
+// ===== Session Management =====
+function saveCurrentSessionMessages() {
+  if (currentSessionId) {
+    sessionMessages[currentSessionId] = document.getElementById('messages-list').innerHTML;
+  }
+}
+
+function restoreSessionMessages(id) {
+  const list = document.getElementById('messages-list');
+  list.innerHTML = sessionMessages[id] || '';
+  scrollToBottom();
+}
+
+function switchSession(id) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (id === currentSessionId) {
+    if (!drawerPinned) hideSessionPanel();
+    return;
+  }
+  finalizeStream();
+  saveCurrentSessionMessages();
+  ws.send(JSON.stringify({ type: 'switch_session', sessionId: id }));
+}
+
+function toggleSessionPanel() {
+  if (drawerPinned) {
+    unpinDrawer();
+  } else {
+    pinDrawer();
+  }
+}
+
+function hideSessionPanel() {
+  if (drawerPinned) return;
+  document.getElementById('session-drawer').classList.remove('open');
+  document.getElementById('session-overlay').classList.remove('open');
+}
+
+function togglePinDrawer() {
+  if (drawerPinned) {
+    unpinDrawer();
+  } else {
+    pinDrawer();
+  }
+}
+
+function pinDrawer() {
+  drawerPinned = true;
+  localStorage.setItem('astron-drawer-pinned', '1');
+  const drawer = document.getElementById('session-drawer');
+  drawer.classList.remove('open');
+  drawer.classList.add('pinned');
+  document.getElementById('session-overlay').classList.remove('open');
+  document.body.classList.add('drawer-pinned');
+  document.getElementById('pin-btn').classList.add('pinned');
+  document.getElementById('close-drawer-btn').style.display = 'none';
+}
+
+function unpinDrawer() {
+  drawerPinned = false;
+  localStorage.setItem('astron-drawer-pinned', '0');
+  const drawer = document.getElementById('session-drawer');
+  drawer.classList.remove('pinned');
+  document.body.classList.remove('drawer-pinned');
+  document.getElementById('pin-btn').classList.remove('pinned');
+  document.getElementById('close-drawer-btn').style.display = '';
+}
+
+function restoreDrawerState() {
+  if (drawerPinned) {
+    const drawer = document.getElementById('session-drawer');
+    drawer.classList.add('pinned');
+    document.body.classList.add('drawer-pinned');
+    document.getElementById('pin-btn').classList.add('pinned');
+    document.getElementById('close-drawer-btn').style.display = 'none';
+  }
+}
+
+function renderSessionPanel() {
+  const listEl = document.getElementById('session-list');
+  // Render newest first
+  const reversed = [...sessionList].reverse();
+  listEl.innerHTML = reversed.map(s => {
+    const active = s.id === currentSessionId ? ' active' : '';
+    const meta = sessionMeta[s.id] || { createdAt: Date.now(), preview: '' };
+    const preview = meta.preview ? escapeHtml(meta.preview) : 'New conversation';
+    const time = relativeTime(meta.createdAt);
+    return `<div class="session-item${active}" onclick="switchSession('${s.id}')">
+      <div class="session-item-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+      </div>
+      <div class="session-item-body">
+        <div class="session-item-title">Session ${s.number}</div>
+        <div class="session-item-preview">${preview}</div>
+      </div>
+      <div class="session-item-time">${time}</div>
+    </div>`;
+  }).join('');
 }
 
 // ===== Scroll =====

@@ -116,7 +116,7 @@ curl -fsSL https://raw.githubusercontent.com/hygao1024/astron-claw/master/uninst
 | `POST` | `/api/media/upload` | 上传媒体文件 |
 | `GET` | `/api/media/download/{media_id}` | 下载媒体文件 |
 | WebSocket | `/bridge/bot` | Bot 端连接 |
-| WebSocket | `/bridge/chat` | Chat 端连接 |
+| WebSocket | `/bridge/chat` | Chat 端连接（支持多会话切换） |
 
 ## 技术栈
 
