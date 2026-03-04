@@ -1307,7 +1307,7 @@ const RECONNECT_BASE_DELAY = 1000;
 if (typeof marked !== 'undefined') {
   const renderer = new marked.Renderer();
 
-  renderer.code = function({ text, lang }) {
+  renderer.code = function(text, lang) {
     const language = lang || 'plaintext';
     let highlighted;
     try {
