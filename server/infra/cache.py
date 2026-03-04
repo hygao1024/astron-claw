@@ -1,7 +1,7 @@
 from redis.asyncio import Redis, RedisCluster
 
-from config import RedisConfig
-from log import logger
+from infra.config import RedisConfig
+from infra.log import logger
 
 _redis: Redis | RedisCluster | None = None
 

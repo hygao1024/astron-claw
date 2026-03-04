@@ -10,3 +10,5 @@ alembic
 loguru
 uvloop
 httptools
+pytest
+pytest-asyncio

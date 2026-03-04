@@ -10,8 +10,8 @@ connections and in-memory bot/chat registries are process-local.
 
 import uvicorn
 
-from log import setup_logging
-from config import load_config
+from infra.log import setup_logging
+from infra.config import load_config
 
 config = load_config()
 server = config.server

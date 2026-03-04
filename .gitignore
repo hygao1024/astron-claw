@@ -7,3 +7,5 @@ server/logs/
 .DS_Store
 .env
 PLAN.md
+.venv/
+server/media/

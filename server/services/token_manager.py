@@ -4,8 +4,8 @@ import time
 from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from models import Token
-from log import logger
+from infra.models import Token
+from infra.log import logger
 
 # A far-future timestamp (~year 2200) used for "never expires" tokens.
 _NEVER_EXPIRES = 9999999999.0

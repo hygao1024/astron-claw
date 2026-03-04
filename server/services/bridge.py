@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import WebSocket
 from redis.asyncio import Redis
 
-from log import logger
+from infra.log import logger
 
 _SESSIONS_PREFIX = "bridge:sessions:"
 _ACTIVE_PREFIX = "bridge:active:"

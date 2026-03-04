@@ -5,8 +5,8 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from models import AdminConfig
-from log import logger
+from infra.models import AdminConfig
+from infra.log import logger
 
 SESSION_TTL = 86400  # 24 hours
 _SESSION_PREFIX = "admin:session:"

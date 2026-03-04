@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
 
-from config import load_config
-from models import Base
+from infra.config import load_config
+from infra.models import Base
 
 # Alembic Config object
 config = context.config

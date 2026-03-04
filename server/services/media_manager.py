@@ -6,10 +6,10 @@ from typing import Optional
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from models import Media
-from log import logger
+from infra.models import Media
+from infra.log import logger
 
-DEFAULT_MEDIA_DIR = Path(__file__).resolve().parent / "media"
+DEFAULT_MEDIA_DIR = Path(__file__).resolve().parent.parent / "media"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 MEDIA_EXPIRY_SECONDS = 7 * 24 * 3600  # 7 days
 

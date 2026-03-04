@@ -49,7 +49,7 @@ def setup_logging(level: str = "INFO") -> None:
     """
     from pathlib import Path
 
-    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir = Path(__file__).resolve().parent.parent / "logs"
     log_dir.mkdir(exist_ok=True)
 
     # Reset loguru sinks
