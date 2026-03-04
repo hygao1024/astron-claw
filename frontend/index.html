@@ -1409,31 +1409,22 @@ function handleConnect() {
   connectWebSocket();
 }
 
-function connectWebSocket() {
-  const connectBtn = document.getElementById('connect-btn');
-  connectBtn.disabled = true;
-  showLoginStatus('<span class="spinner"></span> Connecting...', 'connecting');
-
-  const url = `${serverUrl}/bridge/chat?token=${encodeURIComponent(token)}`;
-
-  try {
-    ws = new WebSocket(url);
-  } catch (e) {
-    showLoginStatus('Invalid server URL', 'error');
-    connectBtn.disabled = false;
-    return;
-  }
-
-  ws.onopen = function() {
+function setupWebSocketHandlers(socket, isReconnect) {
+  socket.onopen = function() {
     reconnectAttempts = 0;
-    showLoginStatus('Validating token...', 'connecting');
+    if (isReconnect) {
+      updateConnectionStatus(true);
+      addSystemMessage('Reconnected successfully!');
+      document.getElementById('msg-input').focus();
+    } else {
+      showLoginStatus('Validating token...', 'connecting');
+    }
   };
 
-  ws.onmessage = function(event) {
+  socket.onmessage = function(event) {
     try {
       const msg = JSON.parse(event.data);
-      // First message from server means token is valid — enter chat
-      if (!document.getElementById('login-screen').classList.contains('hidden')) {
+      if (!isReconnect && !document.getElementById('login-screen').classList.contains('hidden')) {
         showLoginStatus('Connected!', 'success');
         setTimeout(() => {
           document.getElementById('login-screen').classList.add('hidden');
@@ -1449,28 +1440,69 @@ function connectWebSocket() {
     }
   };
 
-  ws.onerror = function() {
-    if (document.getElementById('login-screen').classList.contains('hidden')) {
-      // Already in chat
+  socket.onerror = function() {
+    if (isReconnect || document.getElementById('login-screen').classList.contains('hidden')) {
       updateConnectionStatus(false);
     } else {
       showLoginStatus('Connection failed', 'error');
-      connectBtn.disabled = false;
+      document.getElementById('connect-btn').disabled = false;
     }
   };
 
-  ws.onclose = function(event) {
+  socket.onclose = function(event) {
+    const code = event.code;
+
+    // 4001 = auth failure — stop retrying, return to login
+    if (code === 4001) {
+      clearTimeout(reconnectTimer);
+      reconnectAttempts = MAX_RECONNECT_ATTEMPTS;
+      if (document.getElementById('login-screen').classList.contains('hidden')) {
+        addSystemMessage('Authentication failed. Please re-enter your token.', true);
+        disconnect();
+      } else {
+        const reason = event.reason || 'Invalid token';
+        showLoginStatus(reason, 'error');
+        document.getElementById('connect-btn').disabled = false;
+      }
+      return;
+    }
+
     if (document.getElementById('login-screen').classList.contains('hidden')) {
       updateConnectionStatus(false);
       finalizeStream();
-      addSystemMessage('Connection lost. Attempting to reconnect...');
+
+      // 4000 (custom) or 1012 (uvicorn Service Restart) — fast reconnect
+      if (code === 4000 || code === 1012) {
+        reconnectAttempts = 0;
+        addSystemMessage('Server restarting. Reconnecting...');
+      } else {
+        addSystemMessage('Connection lost. Attempting to reconnect...');
+      }
       attemptReconnect();
     } else {
       const reason = event.reason || 'Connection closed';
       showLoginStatus(reason, 'error');
-      connectBtn.disabled = false;
+      document.getElementById('connect-btn').disabled = false;
     }
   };
+}
+
+function connectWebSocket() {
+  const connectBtn = document.getElementById('connect-btn');
+  connectBtn.disabled = true;
+  showLoginStatus('<span class="spinner"></span> Connecting...', 'connecting');
+
+  const url = `${serverUrl}/bridge/chat?token=${encodeURIComponent(token)}`;
+
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    showLoginStatus('Invalid server URL', 'error');
+    connectBtn.disabled = false;
+    return;
+  }
+
+  setupWebSocketHandlers(ws, false);
 }
 
 function attemptReconnect() {
@@ -1494,33 +1526,19 @@ function attemptReconnect() {
       return;
     }
 
-    ws.onopen = function() {
-      reconnectAttempts = 0;
-      updateConnectionStatus(true);
-      addSystemMessage('Reconnected successfully!');
-      document.getElementById('msg-input').focus();
-    };
-
-    ws.onmessage = function(event) {
-      try {
-        const msg = JSON.parse(event.data);
-        handleServerMessage(msg);
-      } catch (e) {
-        console.error('Failed to parse message:', e);
-      }
-    };
-
-    ws.onerror = function() {
-      updateConnectionStatus(false);
-    };
-
-    ws.onclose = function() {
-      updateConnectionStatus(false);
-      finalizeStream();
-      attemptReconnect();
-    };
+    setupWebSocketHandlers(ws, true);
   }, delay);
 }
+
+// Re-connect when tab becomes visible again
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState !== 'visible') return;
+  if (document.getElementById('login-screen').classList.contains('hidden')
+      && (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)) {
+    reconnectAttempts = 0;
+    attemptReconnect();
+  }
+});
 
 function disconnect() {
   clearTimeout(reconnectTimer);
