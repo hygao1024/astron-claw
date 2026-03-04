@@ -15,13 +15,13 @@ _ONLINE_BOTS_KEY = "bridge:online_bots"
 _BOT_WORKERS_KEY = "bridge:bot_workers"        # HASH: token -> worker_id
 _CHAT_COUNTS_PREFIX = "bridge:chats:"          # per-worker HASH: token -> count
 _WORKERS_KEY = "bridge:workers"                # SET: known worker IDs
-_STREAM_KEY = "bridge:stream"                  # Redis Stream for cross-worker messaging
+_INBOX_PREFIX = "bridge:inbox:"                # LIST per worker: pending messages
 _WORKER_HEARTBEAT_PREFIX = "bridge:worker:"    # STRING key with TTL per worker
 
 _WORKER_TTL = 30        # heartbeat TTL (seconds)
 _HEARTBEAT_INTERVAL = 10  # how often each worker refreshes its heartbeat
-_STREAM_MAXLEN = 100      # cap stream length to bound memory usage
-_STREAM_BLOCK_MS = 1000   # XREAD block timeout (ms)
+_INBOX_POLL_INTERVAL = 1.0  # seconds to sleep when inbox is empty
+_INBOX_BATCH = 50           # max messages to pop per poll cycle
 
 
 class ConnectionBridge:
@@ -33,8 +33,8 @@ class ConnectionBridge:
     write-through cache. WebSocket refs stay in-memory.
 
     Multi-worker safe: connection registry lives in Redis, cross-worker
-    message routing uses a Redis Stream (compatible with both standalone
-    and cluster modes).
+    message routing uses per-worker inbox lists (RPUSH/LPOP), compatible
+    with both standalone and cluster modes.
 
     Worker liveness is tracked via per-worker heartbeat keys with a TTL.
     This ensures stale bot registrations from crashed or restarted workers
@@ -56,14 +56,14 @@ class ConnectionBridge:
         # Session persistence layer (MySQL + Redis cache)
         self._session_store = session_store
         # Background tasks
-        self._pubsub_task: Optional[asyncio.Task] = None
+        self._listener_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._shutting_down = False
 
     async def start(self) -> None:
-        """Start the stream listener and worker heartbeat."""
+        """Start the inbox listener and worker heartbeat."""
         await self._redis.sadd(_WORKERS_KEY, self._worker_id)
-        self._pubsub_task = asyncio.create_task(self._listen_stream())
+        self._listener_task = asyncio.create_task(self._listen_inbox())
         self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
         logger.info("Bridge worker {} started", self._worker_id)
 
@@ -86,8 +86,6 @@ class ConnectionBridge:
                 chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
                 if await self._redis.exists(chat_key):
                     await self._redis.expire(chat_key, _WORKER_TTL)
-                # Keep stream key alive; auto-expires when all workers are down
-                await self._redis.expire(_STREAM_KEY, _WORKER_TTL)
             except Exception:
                 if not self._shutting_down:
                     logger.exception("Heartbeat refresh failed (worker={})", self._worker_id)
@@ -247,7 +245,7 @@ class ConnectionBridge:
         """Remove sessions older than max_age_days. Returns count removed."""
         return await self._session_store.cleanup_old_sessions(max_age_days * 86400)
 
-    # ── Message routing (cross-worker via Stream) ──────────────────────────────
+    # ── Message routing (cross-worker via inbox lists) ───────────────────────
 
     async def send_to_bot(
         self,
@@ -313,13 +311,13 @@ class ConnectionBridge:
                 self._pending_requests.pop(request_id, None)
                 return None
 
-        # Bot on another worker — route via Stream
+        # Bot on another worker — route via inbox
         await self._publish({
             "action": "to_bot",
             "token": token,
             "rpc_request": rpc_request,
         })
-        logger.info("Sent to bot (stream): req={} type={} (token={}...)", request_id, msg_type, token[:10])
+        logger.info("Sent to bot (inbox): req={} type={} (token={}...)", request_id, msg_type, token[:10])
         return request_id
 
     async def handle_bot_message(self, token: str, raw: str) -> None:
@@ -372,7 +370,7 @@ class ConnectionBridge:
     # ── Broadcasting ──────────────────────────────────────────────────────────
 
     async def _broadcast_to_chats(self, token: str, event: dict) -> None:
-        """Broadcast to local chats AND publish to Stream for other workers."""
+        """Broadcast to local chats AND publish to inbox for other workers."""
         await self._broadcast_to_local_chats(token, event)
         await self._publish({"action": "to_chats", "token": token, "event": event})
 
@@ -393,81 +391,67 @@ class ConnectionBridge:
         if closed:
             logger.warning("Removed {} dead chat connections (token={}...)", len(closed), token[:10])
 
-    # ── Redis Stream (replaces Pub/Sub — works with both standalone & cluster) ─
+    # ── Per-worker inbox (RPUSH/LPOP — works with both standalone & cluster) ─
 
     async def _publish(self, message: dict) -> None:
-        """Append a message to the Redis Stream with origin worker ID."""
-        message["_origin"] = self._worker_id
+        """Push a message to every other live worker's inbox list."""
+        payload = json.dumps(message)
         try:
-            await self._redis.xadd(
-                _STREAM_KEY,
-                {"data": json.dumps(message)},
-                maxlen=_STREAM_MAXLEN,
-                approximate=True,
-            )
+            workers = await self._redis.smembers(_WORKERS_KEY)
+            for w in workers:
+                wid = w if isinstance(w, str) else w.decode()
+                if wid == self._worker_id:
+                    continue
+                inbox = f"{_INBOX_PREFIX}{wid}"
+                await self._redis.rpush(inbox, payload)
+                await self._redis.expire(inbox, _WORKER_TTL)
         except Exception:
             if not self._shutting_down:
-                logger.exception("Failed to write to stream")
+                logger.exception("Failed to publish message")
 
-    async def _listen_stream(self) -> None:
-        """Poll the Redis Stream and handle messages from other workers.
-
-        Uses XRANGE (single-key command) instead of XREAD so it works in
-        both standalone and Redis Cluster modes.
-        """
-        # Determine the latest existing ID so we only process new messages.
-        try:
-            latest = await self._redis.xrevrange(_STREAM_KEY, count=1)
-            last_id = latest[0][0] if latest else "0-0"
-        except Exception:
-            last_id = "0-0"
-
+    async def _listen_inbox(self) -> None:
+        """Poll own inbox list for messages from other workers."""
+        inbox = f"{_INBOX_PREFIX}{self._worker_id}"
         while not self._shutting_down:
             try:
-                # Exclusive lower bound: "(" prefix skips the last_id itself
-                entries = await self._redis.xrange(
-                    _STREAM_KEY, min=f"({last_id}", count=50,
-                )
-                if not entries:
-                    await asyncio.sleep(_STREAM_BLOCK_MS / 1000)
-                    continue
-                for msg_id, fields in entries:
-                    last_id = msg_id
+                got_any = False
+                for _ in range(_INBOX_BATCH):
+                    raw = await self._redis.lpop(inbox)
+                    if raw is None:
+                        break
+                    got_any = True
                     try:
-                        data = json.loads(fields.get("data", "{}"))
+                        data = json.loads(raw)
                     except (json.JSONDecodeError, TypeError):
                         continue
-                    if data.get("_origin") == self._worker_id:
-                        continue
-                    await self._handle_stream_message(data)
+                    await self._handle_inbox_message(data)
+                if not got_any:
+                    await asyncio.sleep(_INBOX_POLL_INTERVAL)
             except asyncio.CancelledError:
                 break
             except Exception:
                 if not self._shutting_down:
-                    logger.exception("Stream listener error, retrying in 1s...")
+                    logger.exception("Inbox listener error, retrying in 1s...")
                     await asyncio.sleep(1)
 
-    async def _handle_stream_message(self, data: dict) -> None:
-        """Handle an incoming message from the stream (from another worker)."""
+    async def _handle_inbox_message(self, data: dict) -> None:
+        """Handle an incoming message from another worker's RPUSH."""
         action = data.get("action")
         token = data.get("token", "")
 
         if action == "to_bot":
-            # Another worker wants us to forward a message to a bot we own
             bot_ws = self._bots.get(token)
             if bot_ws:
                 try:
                     await bot_ws.send_json(data["rpc_request"])
-                    logger.info("Stream: forwarded to local bot (token={}...)", token[:10])
+                    logger.info("Inbox: forwarded to local bot (token={}...)", token[:10])
                 except Exception:
-                    logger.exception("Stream: failed to forward to local bot (token={}...)", token[:10])
+                    logger.exception("Inbox: failed to forward to local bot (token={}...)", token[:10])
 
         elif action == "to_chats":
-            # Another worker is broadcasting to chats — send to our local ones
             await self._broadcast_to_local_chats(token, data["event"])
 
         elif action == "bot_status":
-            # Bot connected/disconnected on another worker — notify our local chats
             await self._broadcast_to_local_chats(token, data["event"])
 
     # ── Graceful shutdown ─────────────────────────────────────────────────────
@@ -502,14 +486,15 @@ class ConnectionBridge:
                     pass
         self._chats.clear()
 
-        # Delete this worker's per-worker chat counts and workers SET entry
+        # Delete this worker's per-worker chat counts, inbox, and workers SET entry
         await self._redis.delete(f"{_CHAT_COUNTS_PREFIX}{self._worker_id}")
+        await self._redis.delete(f"{_INBOX_PREFIX}{self._worker_id}")
         await self._redis.srem(_WORKERS_KEY, self._worker_id)
 
         self._pending_requests.clear()
 
         # Stop background tasks
-        for task in (self._pubsub_task, self._heartbeat_task):
+        for task in (self._listener_task, self._heartbeat_task):
             if task:
                 task.cancel()
                 try:
