@@ -23,9 +23,11 @@ http://127.0.0.1:8765
 
 | 接口类别 | 认证方式 |
 |---------|---------|
+| 健康检查 (`/api/health`) | 无需认证 |
 | Token 接口 (`/api/token/*`) | 无需认证 |
 | Admin 接口 (`/api/admin/*`) | Cookie `admin_session`（登录后自动携带） |
-| Media 接口 (`/api/media/*`) | `Authorization: Bearer <token>` 或 Query 参数 `token` |
+| 媒体上传 (`POST /api/media/upload`) | `Authorization: Bearer <token>`（仅 Header） |
+| 媒体下载 (`GET /api/media/download/*`) | `Authorization: Bearer <token>` 或 Query 参数 `token` |
 | WebSocket (`/bridge/*`) | Query 参数 `token` 或请求头 `X-Astron-Bot-Token` |
 
 ---
@@ -62,6 +64,7 @@ http://127.0.0.1:8765
 - [6. Media 接口](#6-media-接口)
   - [6.1 上传媒体文件](#61-上传媒体文件)
   - [6.2 下载媒体文件](#62-下载媒体文件)
+- [7. 健康检查接口](#7-健康检查接口)
 
 ---
 
@@ -1569,6 +1572,62 @@ resp = requests.get(
 )
 with open("downloaded.jpg", "wb") as f:
     f.write(resp.content)
+```
+
+---
+
+## 7. 健康检查接口
+
+检查服务端 MySQL 和 Redis 的连通性，无需认证。
+
+```
+GET /api/health
+```
+
+**请求参数：** 无
+
+**响应示例（全部健康）：**
+
+```json
+{
+  "status": "ok",
+  "mysql": true,
+  "redis": true
+}
+```
+
+**响应示例（部分不可用）：**
+
+```json
+{
+  "status": "degraded",
+  "mysql": true,
+  "redis": false
+}
+```
+
+**响应字段：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | string | `"ok"` 表示全部正常，`"degraded"` 表示部分服务不可用 |
+| `mysql` | boolean | MySQL 连通性 |
+| `redis` | boolean | Redis 连通性 |
+
+> 注：该接口始终返回 HTTP 200，通过 `status` 字段区分健康状态。Dockerfile 中的 `HEALTHCHECK` 即使用此端点。
+
+**测试代码：**
+
+```bash
+curl http://127.0.0.1:8765/api/health
+```
+
+```python
+import requests
+
+resp = requests.get("http://127.0.0.1:8765/api/health")
+data = resp.json()
+print(data["status"])  # "ok" or "degraded"
 ```
 
 ---
