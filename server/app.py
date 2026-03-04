@@ -40,11 +40,13 @@ async def lifespan(app: FastAPI):
     media_manager = MediaManager(session_factory)
     bridge = ConnectionBridge(redis)
     bridge.set_media_manager(media_manager)
+    await bridge.start()
 
     logger.info("Astron Claw Bridge Server started")
     yield
 
-    # Shutdown
+    # Shutdown — close connections + stop pub/sub before closing infrastructure
+    await bridge.shutdown()
     await close_redis()
     await close_db()
     logger.info("Astron Claw Bridge Server stopped")
@@ -103,7 +105,7 @@ async def validate_token(body: dict):
     valid = await token_manager.validate(token)
     return {
         "valid": valid,
-        "bot_connected": bridge.is_bot_connected(token) if valid else False,
+        "bot_connected": await bridge.is_bot_connected(token) if valid else False,
     }
 
 
@@ -192,7 +194,7 @@ async def list_tokens(admin_session: str | None = Cookie(default=None)):
     if denied:
         return denied
     tokens = await token_manager.list_all()
-    connections = bridge.get_connections_summary()
+    connections = await bridge.get_connections_summary()
     result = []
     for t in tokens:
         conn = connections.get(t["token"], {})
@@ -225,6 +227,7 @@ async def admin_delete_token(token_value: str, admin_session: str | None = Cooki
     if denied:
         return denied
     await token_manager.remove(token_value)
+    await bridge.remove_bot_sessions(token_value)
     logger.info("Admin deleted token: {}...", token_value[:16])
     return {"ok": True}
 
@@ -345,7 +348,7 @@ async def ws_bot(
 
     await ws.accept()
 
-    if not bridge.register_bot(bot_token, ws):
+    if not await bridge.register_bot(bot_token, ws):
         await ws.send_json({"error": "Another bot is already connected with this token"})
         await ws.close(code=4002, reason="Bot already connected")
         logger.warning("Bot connection rejected: duplicate token {}...", bot_token[:10])
@@ -381,16 +384,24 @@ async def ws_chat(
         return
 
     await ws.accept()
-    bridge.register_chat(token, ws)
+    await bridge.register_chat(token, ws)
     logger.info("Chat client connected: {}...", token[:10])
 
     await ws.send_json({
         "type": "bot_status",
-        "connected": bridge.is_bot_connected(token),
+        "connected": await bridge.is_bot_connected(token),
     })
 
-    session_id, session_number = await bridge.create_session(token)
-    sessions, active_id = await bridge.get_sessions(token)
+    # Restore active session if one exists in Redis; otherwise create new
+    existing_session = await bridge.get_active_session(token)
+    if existing_session:
+        sessions, active_id = await bridge.get_sessions(token)
+        session_id = existing_session
+        session_number = next((s[1] for s in sessions if s[0] == existing_session), 1)
+        logger.info("Chat session restored: {} (token={}...)", session_id[:8], token[:10])
+    else:
+        session_id, session_number = await bridge.create_session(token)
+        sessions, active_id = await bridge.get_sessions(token)
     await ws.send_json({
         "type": "session_info",
         "sessionId": session_id,
@@ -446,7 +457,7 @@ async def ws_chat(
                     await ws.send_json({"type": "error", "content": "Missing media info"})
                     continue
 
-                if not bridge.is_bot_connected(token):
+                if not await bridge.is_bot_connected(token):
                     await ws.send_json({"type": "error", "content": "No bot connected"})
                     continue
 
@@ -463,7 +474,7 @@ async def ws_chat(
     except Exception:
         logger.exception("Chat connection error: {}...", token[:10])
     finally:
-        bridge.unregister_chat(token, ws)
+        await bridge.unregister_chat(token, ws)
 
 
 # ── Static assets (CSS, JS, etc.) ──────────────────────────────────────────

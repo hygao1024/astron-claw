@@ -15,10 +15,12 @@ Chat Client ──WebSocket──▶ Bridge Server ◀──WebSocket── Bot 
 - **媒体消息支持** — 图片、音频、视频、文件的上传/下载和双向传输
 - **Token 管理** — 支持自定义名称、多种过期时间（1h/6h/1d/7d/30d/永不过期）
 - **流式传输** — Token 级别真流式输出（onPartialReply 模式），支持思考过程、文本片段、工具调用/结果等多种消息类型
+- **多 Worker 高可用** — Redis Pub/Sub 跨 Worker 消息路由，连接状态全局可见，支持多进程 Uvicorn 部署
+- **优雅关闭 & 自动重连** — 服务端滚动更新时通知客户端，Chat/Bot 自动重连并恢复会话，无需手动刷新
 - **Admin 管理面板** — 密码认证、Token CRUD、在线状态监控
 - **Web 聊天界面** — 内置 Chat 前端，支持文本和附件发送、会话切换
 - **JSON-RPC 2.0 协议** — Bot 端和服务端之间使用标准 JSON-RPC 通信
-- **高可用存储** — MySQL (SQLAlchemy ORM) 持久化 + Redis 会话缓存，支持 Redis 单机/集群双模式
+- **高可用存储** — MySQL (SQLAlchemy ORM) 持久化 + Redis 会话缓存 + Redis Pub/Sub 跨 Worker 通信，支持 Redis 单机/集群双模式
 - **数据库版本控制** — Alembic 管理 Schema 迁移，支持升级/回滚
 
 ## 项目结构
@@ -86,6 +88,11 @@ cp .env.example .env
 | `REDIS_PASSWORD` | Redis 密码 | — |
 | `REDIS_DB` | Redis DB 编号（集群模式忽略） | `0` |
 | `REDIS_CLUSTER` | 是否使用 Redis 集群模式 | `false` |
+| `SERVER_HOST` | 服务监听地址 | `0.0.0.0` |
+| `SERVER_PORT` | 服务监听端口 | `8765` |
+| `SERVER_WORKERS` | Worker 进程数 | `CPU 核数 + 1` |
+| `SERVER_LOG_LEVEL` | 日志级别 | `info` |
+| `SERVER_ACCESS_LOG` | 是否启用访问日志 | `true` |
 
 ### 2. 初始化数据库
 

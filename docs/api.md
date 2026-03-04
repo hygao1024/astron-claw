@@ -566,7 +566,7 @@ print(resp.json())  # {'ok': True}
 
 ### 3.4 删除 Token
 
-立即删除指定 Token。
+立即删除指定 Token，同时清理该 Token 关联的 Redis 会话数据（sessions、active session、bot 注册信息）。
 
 ```
 DELETE /api/admin/tokens/{token_value}
@@ -654,6 +654,8 @@ ws://{host}:{port}/bridge/chat?token={token}
 |------|------|
 | Token 有效 | 连接保持，服务端依次推送 `bot_status` 和 `session_info` 消息 |
 | Token 无效/过期 | 服务端关闭连接，close code `4001`，reason `"Invalid or missing token"` |
+| 重连（已有会话） | 自动恢复 Redis 中的活跃会话，而非创建新会话 |
+| 服务重启 | 服务端发送 close code `4000` 或 `1012`，客户端应快速重连 |
 
 ---
 
@@ -1187,6 +1189,8 @@ Token 支持两种传递方式（二选一）：
 
 | Code | 含义 |
 |------|------|
+| `1012` | 服务重启（uvicorn 标准） |
+| `4000` | 服务重启（graceful shutdown） |
 | `4001` | Token 无效或已过期 |
 | `4002` | 该 Token 已有另一个 Bot 在线（每个 Token 只允许 1 个 Bot） |
 
@@ -1585,5 +1589,16 @@ with open("downloaded.jpg", "wb") as f:
 
 | 关闭码 | 说明 |
 |--------|------|
+| `1012` | 服务重启（uvicorn 标准关闭码，等同 `4000`） |
+| `4000` | 服务重启（自定义关闭码，graceful shutdown 时发送） |
 | `4001` | Token 无效或已过期 |
 | `4002` | 该 Token 已有 Bot 在线（仅 `/bridge/bot`） |
+
+**客户端重连建议：**
+
+| 关闭码 | 推荐行为 |
+|--------|---------|
+| `4000` / `1012` | 重置重试计数器，立即快速重连 |
+| `4001` | 停止重试，返回登录/Token 输入页 |
+| `4002` | 停止重试，提示用户已有 Bot 在线 |
+| 其他 | 指数退避重连 |
