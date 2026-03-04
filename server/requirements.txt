@@ -8,3 +8,5 @@ redis[hiredis]
 python-dotenv
 alembic
 loguru
+uvloop
+httptools

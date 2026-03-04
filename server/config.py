@@ -37,9 +37,19 @@ class RedisConfig:
 
 
 @dataclass(frozen=True)
+class ServerConfig:
+    host: str
+    port: int
+    workers: int
+    log_level: str
+    access_log: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     mysql: MysqlConfig
     redis: RedisConfig
+    server: ServerConfig
 
 
 def load_config() -> AppConfig:
@@ -57,5 +67,12 @@ def load_config() -> AppConfig:
             password=os.getenv("REDIS_PASSWORD", ""),
             db=int(os.getenv("REDIS_DB", "0")),
             cluster=os.getenv("REDIS_CLUSTER", "false").lower() == "true",
+        ),
+        server=ServerConfig(
+            host=os.getenv("SERVER_HOST", "0.0.0.0"),
+            port=int(os.getenv("SERVER_PORT", "8765")),
+            workers=int(os.getenv("SERVER_WORKERS", str((os.cpu_count() or 1) + 1))),
+            log_level=os.getenv("SERVER_LOG_LEVEL", "info"),
+            access_log=os.getenv("SERVER_ACCESS_LOG", "true").lower() == "true",
         ),
     )
