@@ -28,7 +28,8 @@ http://127.0.0.1:8765
 | Admin 接口 (`/api/admin/*`) | Cookie `admin_session`（登录后自动携带） |
 | 媒体上传 (`POST /api/media/upload`) | `Authorization: Bearer <token>`（仅 Header） |
 | 媒体下载 (`GET /api/media/download/*`) | `Authorization: Bearer <token>` 或 Query 参数 `token` |
-| WebSocket (`/bridge/*`) | Query 参数 `token` 或请求头 `X-Astron-Bot-Token` |
+| WebSocket `/bridge/bot` | Query 参数 `token` 或请求头 `X-Astron-Bot-Token` |
+| WebSocket `/bridge/chat` | Query 参数 `token` |
 
 ---
 
@@ -781,7 +782,10 @@ Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
 
 #### `done` — 本轮回复结束
 
-收到此消息表示 Bot 对当前提问的回复已完成。`content` 字段可选，包含最终完整文本。
+收到此消息表示 Bot 对当前提问的回复已完成。`done` 事件有两种来源：
+
+1. Bot 发送 `session/update` Notification（`sessionUpdate: "agent_message_final"`）— 此时 `content` 携带最终完整文本
+2. Bot 发送 JSON-RPC Response（`result.stopReason: "end_turn"`）— 此时无 `content` 字段
 
 | 字段 | 类型 | 说明 |
 |------|------|------|

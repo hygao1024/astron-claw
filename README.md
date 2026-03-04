@@ -81,6 +81,8 @@ astron-claw/
 │   └── api.md              # API 参考文档
 ├── scripts/
 │   └── release.sh          # 插件打包脚本
+├── Dockerfile              # Docker 镜像构建文件
+├── .dockerignore           # Docker 构建忽略文件
 ├── install.sh              # 插件安装脚本（支持远程一行安装）
 └── uninstall.sh            # 插件卸载脚本
 ```
@@ -222,6 +224,10 @@ python3 server/tests/e2e/test_integration.py
 | `GET` | `/api/health` | 健康检查（MySQL + Redis 连通性） |
 | `POST` | `/api/token` | 创建 Token |
 | `POST` | `/api/token/validate` | 验证 Token |
+| `GET` | `/api/admin/auth/status` | 查询 Admin 认证状态 |
+| `POST` | `/api/admin/auth/setup` | 首次设置管理员密码 |
+| `POST` | `/api/admin/auth/login` | 管理员登录 |
+| `POST` | `/api/admin/auth/logout` | 管理员登出 |
 | `GET` | `/api/admin/tokens` | 获取 Token 列表 |
 | `POST` | `/api/admin/tokens` | 创建 Token（支持名称和过期时间） |
 | `PATCH` | `/api/admin/tokens/{token}` | 更新 Token 名称/过期时间 |

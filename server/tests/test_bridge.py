@@ -33,6 +33,8 @@ class TestRegisterBot:
     async def test_register_bot_redis_dup(self, bridge, mock_redis):
         ws = AsyncMock()
         mock_redis.sismember.return_value = True
+        mock_redis.hget.return_value = "other-worker-id"
+        mock_redis.exists.return_value = 1  # owning worker is alive
         result = await bridge.register_bot("tok-remote", ws)
         assert result is False
 
@@ -90,7 +92,14 @@ class TestHandleBotMessage:
 
 class TestGetConnectionsSummary:
     async def test_get_connections_summary(self, bridge, mock_redis):
-        mock_redis.smembers.return_value = {"tok-1", "tok-2"}
+        # smembers is called twice: first for online_bots, then for workers SET
+        mock_redis.smembers.side_effect = [
+            {"tok-1", "tok-2"},   # _ONLINE_BOTS_KEY
+            {"worker-a"},         # _WORKERS_KEY
+        ]
+        mock_redis.hget.return_value = "some-worker"
+        mock_redis.exists.return_value = 1  # all workers alive
+        # hgetall is called once per alive worker for chat counts
         mock_redis.hgetall.return_value = {"tok-1": "3", "tok-3": "1"}
 
         summary = await bridge.get_connections_summary()

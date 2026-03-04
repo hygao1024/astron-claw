@@ -11,9 +11,14 @@ from infra.log import logger
 _SESSIONS_PREFIX = "bridge:sessions:"
 _ACTIVE_PREFIX = "bridge:active:"
 _ONLINE_BOTS_KEY = "bridge:online_bots"
-_BOT_WORKER_PREFIX = "bridge:bot_worker:"
-_CHAT_COUNTS_KEY = "bridge:chat_counts"
+_BOT_WORKERS_KEY = "bridge:bot_workers"        # HASH: token -> worker_id
+_CHAT_COUNTS_PREFIX = "bridge:chats:"          # per-worker HASH: token -> count
+_WORKERS_KEY = "bridge:workers"                # SET: known worker IDs
 _PUBSUB_CHANNEL = "bridge:pubsub"
+_WORKER_HEARTBEAT_PREFIX = "bridge:worker:"    # STRING key with TTL per worker
+
+_WORKER_TTL = 30        # heartbeat TTL (seconds)
+_HEARTBEAT_INTERVAL = 10  # how often each worker refreshes its heartbeat
 
 
 class ConnectionBridge:
@@ -25,6 +30,10 @@ class ConnectionBridge:
 
     Multi-worker safe: connection registry lives in Redis, cross-worker
     message routing uses Redis Pub/Sub.
+
+    Worker liveness is tracked via per-worker heartbeat keys with a TTL.
+    This ensures stale bot registrations from crashed or restarted workers
+    are detected without requiring a startup cleanup — safe for rolling updates.
     """
 
     def __init__(self, redis: Redis):
@@ -39,14 +48,45 @@ class ConnectionBridge:
         self._media_manager = None
         # Redis client for session persistence + cross-worker state
         self._redis = redis
-        # Pub/Sub listener task
+        # Background tasks
         self._pubsub_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
         self._shutting_down = False
 
     async def start(self) -> None:
-        """Start the Pub/Sub listener for cross-worker messaging."""
+        """Start the Pub/Sub listener and worker heartbeat."""
+        await self._redis.sadd(_WORKERS_KEY, self._worker_id)
         self._pubsub_task = asyncio.create_task(self._listen_pubsub())
-        logger.info("Bridge worker {} started pub/sub listener", self._worker_id)
+        self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
+        logger.info("Bridge worker {} started", self._worker_id)
+
+    async def _run_heartbeat(self) -> None:
+        """Periodically refresh this worker's heartbeat key in Redis.
+
+        As long as this key exists, other workers and the admin view treat
+        this worker's bot registrations and chat counts as live.
+        When the worker stops gracefully it deletes the key; when it crashes
+        the key expires after _WORKER_TTL seconds.
+        """
+        while not self._shutting_down:
+            try:
+                await self._redis.set(
+                    f"{_WORKER_HEARTBEAT_PREFIX}{self._worker_id}",
+                    "1",
+                    ex=_WORKER_TTL,
+                )
+                # Keep per-worker chat count key alive while this worker is up
+                chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
+                if await self._redis.exists(chat_key):
+                    await self._redis.expire(chat_key, _WORKER_TTL)
+            except Exception:
+                if not self._shutting_down:
+                    logger.exception("Heartbeat refresh failed (worker={})", self._worker_id)
+            await asyncio.sleep(_HEARTBEAT_INTERVAL)
+
+    async def _is_worker_alive(self, worker_id: str) -> bool:
+        """Return True if the given worker's heartbeat key is still present."""
+        return bool(await self._redis.exists(f"{_WORKER_HEARTBEAT_PREFIX}{worker_id}"))
 
     def set_media_manager(self, media_manager) -> None:
         """Set the media manager for resolving download URLs in messages."""
@@ -55,27 +95,40 @@ class ConnectionBridge:
     # ── Bot registration (multi-worker safe) ─────────────────────────────────
 
     async def register_bot(self, token: str, ws: WebSocket) -> bool:
-        """Register a bot connection. Returns False if a bot is already connected
-        (locally or on another worker)."""
+        """Register a bot connection. Returns False if a live bot is already connected.
+
+        If Redis shows a bot registered but its owning worker's heartbeat has
+        expired (crashed worker), the stale entry is cleaned up and registration
+        proceeds.
+        """
         if token in self._bots:
             return False
-        # Check Redis global registry
+
         if await self._redis.sismember(_ONLINE_BOTS_KEY, token):
-            return False
+            owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
+            if owner and await self._is_worker_alive(owner):
+                return False  # Another live worker owns this bot
+            # Owning worker is dead — clean up stale registration
+            await self._redis.srem(_ONLINE_BOTS_KEY, token)
+            await self._redis.hdel(_BOT_WORKERS_KEY, token)
+            logger.warning(
+                "Cleaned stale bot registration (dead worker={}, token={}...)",
+                owner, token[:10],
+            )
+
         self._bots[token] = ws
         await self._redis.sadd(_ONLINE_BOTS_KEY, token)
-        await self._redis.set(f"{_BOT_WORKER_PREFIX}{token}", self._worker_id)
+        await self._redis.hset(_BOT_WORKERS_KEY, token, self._worker_id)
         logger.info("Bot registered on worker {} (token={}...)", self._worker_id, token[:10])
         return True
 
     async def unregister_bot(self, token: str) -> None:
         """Remove bot from local dict + conditionally clean Redis (only if we own it)."""
         self._bots.pop(token, None)
-        # Only remove from Redis if this worker owns the bot registration
-        owner = await self._redis.get(f"{_BOT_WORKER_PREFIX}{token}")
+        owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
         if owner == self._worker_id:
             await self._redis.srem(_ONLINE_BOTS_KEY, token)
-            await self._redis.delete(f"{_BOT_WORKER_PREFIX}{token}")
+            await self._redis.hdel(_BOT_WORKERS_KEY, token)
             logger.info("Bot unregistered from Redis (worker={}, token={}...)", self._worker_id, token[:10])
         else:
             logger.info("Bot removed locally only (owner={}, self={}, token={}...)", owner, self._worker_id, token[:10])
@@ -85,8 +138,11 @@ class ConnectionBridge:
         await self._redis.delete(f"{_SESSIONS_PREFIX}{token}")
         await self._redis.delete(f"{_ACTIVE_PREFIX}{token}")
         await self._redis.srem(_ONLINE_BOTS_KEY, token)
-        await self._redis.delete(f"{_BOT_WORKER_PREFIX}{token}")
-        await self._redis.hdel(_CHAT_COUNTS_KEY, token)
+        await self._redis.hdel(_BOT_WORKERS_KEY, token)
+        # Remove chat counts for this token from all workers
+        worker_ids = await self._redis.smembers(_WORKERS_KEY)
+        for wid in worker_ids:
+            await self._redis.hdel(f"{_CHAT_COUNTS_PREFIX}{wid}", token)
         logger.info("Bot sessions fully removed from Redis (token={}...)", token[:10])
 
     # ── Chat registration (multi-worker safe) ─────────────────────────────────
@@ -95,32 +151,62 @@ class ConnectionBridge:
         if token not in self._chats:
             self._chats[token] = set()
         self._chats[token].add(ws)
-        await self._redis.hincrby(_CHAT_COUNTS_KEY, token, 1)
+        chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
+        await self._redis.hincrby(chat_key, token, 1)
+        await self._redis.expire(chat_key, _WORKER_TTL)
 
     async def unregister_chat(self, token: str, ws: WebSocket) -> None:
         if token in self._chats:
             self._chats[token].discard(ws)
             if not self._chats[token]:
                 del self._chats[token]
-        count = await self._redis.hincrby(_CHAT_COUNTS_KEY, token, -1)
+        chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
+        count = await self._redis.hincrby(chat_key, token, -1)
         if count <= 0:
-            await self._redis.hdel(_CHAT_COUNTS_KEY, token)
+            await self._redis.hdel(chat_key, token)
 
     # ── Queries (read from Redis for cluster-wide view) ───────────────────────
 
     async def is_bot_connected(self, token: str) -> bool:
-        return await self._redis.sismember(_ONLINE_BOTS_KEY, token)
+        """Return True only if a bot is registered AND its owning worker is alive."""
+        if not await self._redis.sismember(_ONLINE_BOTS_KEY, token):
+            return False
+        owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
+        if not owner:
+            return False
+        return await self._is_worker_alive(owner)
 
     async def get_connections_summary(self) -> dict[str, dict]:
-        """Return per-token bot online status and chat connection count (cluster-wide)."""
+        """Return per-token bot online status and chat connection count (cluster-wide).
+
+        Both bot status and chat counts are verified against worker liveness
+        to avoid showing stale data from crashed workers.
+        """
         online_bots = await self._redis.smembers(_ONLINE_BOTS_KEY)
-        chat_counts = await self._redis.hgetall(_CHAT_COUNTS_KEY)
-        tokens = set(online_bots) | set(chat_counts.keys())
+        worker_ids = await self._redis.smembers(_WORKERS_KEY)
+
+        # Verify each bot's owning worker is still alive
+        live_bots: set[str] = set()
+        for token in online_bots:
+            owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
+            if owner and await self._is_worker_alive(owner):
+                live_bots.add(token)
+
+        # Sum chat counts from alive workers only
+        chat_counts: dict[str, int] = {}
+        for wid in worker_ids:
+            if not await self._is_worker_alive(wid):
+                continue
+            counts = await self._redis.hgetall(f"{_CHAT_COUNTS_PREFIX}{wid}")
+            for token, count in counts.items():
+                chat_counts[token] = chat_counts.get(token, 0) + int(count)
+
+        tokens = live_bots | set(chat_counts.keys())
         summary: dict[str, dict] = {}
         for t in tokens:
             summary[t] = {
-                "bot_online": t in online_bots,
-                "chat_count": int(chat_counts.get(t, 0)),
+                "bot_online": t in live_bots,
+                "chat_count": chat_counts.get(t, 0),
             }
         return summary
 
@@ -374,6 +460,9 @@ class ConnectionBridge:
         self._shutting_down = True
         logger.info("Bridge worker {} shutting down...", self._worker_id)
 
+        # Delete this worker's heartbeat so other workers immediately see it as dead
+        await self._redis.delete(f"{_WORKER_HEARTBEAT_PREFIX}{self._worker_id}")
+
         # Close all local bot connections
         for token, ws in list(self._bots.items()):
             try:
@@ -381,10 +470,10 @@ class ConnectionBridge:
             except Exception:
                 pass
             # Clean Redis if we own the bot
-            owner = await self._redis.get(f"{_BOT_WORKER_PREFIX}{token}")
+            owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
             if owner == self._worker_id:
                 await self._redis.srem(_ONLINE_BOTS_KEY, token)
-                await self._redis.delete(f"{_BOT_WORKER_PREFIX}{token}")
+                await self._redis.hdel(_BOT_WORKERS_KEY, token)
         self._bots.clear()
 
         # Close all local chat connections
@@ -394,23 +483,22 @@ class ConnectionBridge:
                     await ws.close(code=4000, reason="Server restarting")
                 except Exception:
                     pass
-            # Decrement chat counts
-            local_count = len(chat_set)
-            if local_count > 0:
-                new_count = await self._redis.hincrby(_CHAT_COUNTS_KEY, token, -local_count)
-                if new_count <= 0:
-                    await self._redis.hdel(_CHAT_COUNTS_KEY, token)
         self._chats.clear()
+
+        # Delete this worker's per-worker chat counts and workers SET entry
+        await self._redis.delete(f"{_CHAT_COUNTS_PREFIX}{self._worker_id}")
+        await self._redis.srem(_WORKERS_KEY, self._worker_id)
 
         self._pending_requests.clear()
 
-        # Stop Pub/Sub listener
-        if self._pubsub_task:
-            self._pubsub_task.cancel()
-            try:
-                await self._pubsub_task
-            except asyncio.CancelledError:
-                pass
+        # Stop background tasks
+        for task in (self._pubsub_task, self._heartbeat_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         logger.info("Bridge worker {} shutdown complete", self._worker_id)
 
