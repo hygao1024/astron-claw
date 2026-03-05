@@ -38,6 +38,14 @@
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
   --transition: 0.2s ease;
+  --tool-accent: #5b9cf7;
+  --tool-accent-dim: rgba(79, 143, 247, 0.14);
+  --tool-success-dim: rgba(34, 197, 94, 0.10);
+  --tool-error-dim: rgba(239, 68, 68, 0.10);
+  --tool-running-dim: rgba(79, 143, 247, 0.06);
+  --tool-stripe-running: rgba(79, 143, 247, 0.45);
+  --tool-stripe-completed: rgba(34, 197, 94, 0.40);
+  --tool-stripe-error: rgba(239, 68, 68, 0.45);
 }
 
 [data-theme="light"] {
@@ -61,6 +69,14 @@
   --thinking-bg: #f5f6fa;
   --thinking-border: #dce0ed;
   --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  --tool-accent: #3b82f6;
+  --tool-accent-dim: rgba(37, 99, 235, 0.12);
+  --tool-success-dim: rgba(34, 197, 94, 0.08);
+  --tool-error-dim: rgba(239, 68, 68, 0.08);
+  --tool-running-dim: rgba(37, 99, 235, 0.05);
+  --tool-stripe-running: rgba(37, 99, 235, 0.35);
+  --tool-stripe-completed: rgba(34, 197, 94, 0.30);
+  --tool-stripe-error: rgba(239, 68, 68, 0.35);
 }
 
 html, body {
@@ -438,48 +454,136 @@ html, body {
   white-space: pre-wrap;
 }
 
-/* -- Tool Call / Result -- */
-.tool-block {
+/* -- Tool Card (paired tool_call + tool_result) -- */
+@keyframes toolSpin {
+  to { transform: rotate(360deg); }
+}
+@keyframes toolPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.tool-card {
   max-width: 85%;
   border: 1px solid var(--tool-border);
+  border-left: 2px solid var(--tool-border);
   background: var(--tool-bg);
   border-radius: var(--radius-sm);
   overflow: hidden;
   animation: msgIn 0.3s ease;
+  transition: border-color 0.3s ease;
 }
+.tool-card.status-running { border-left-color: var(--tool-stripe-running); }
+.tool-card.status-completed { border-left-color: var(--tool-stripe-completed); }
+.tool-card.status-error { border-left-color: var(--tool-stripe-error); }
 
-.tool-header {
+.tool-card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+.tool-card-header:hover { background: var(--tool-running-dim); }
+
+.tool-card-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 15px;
+}
+.tool-card.status-running .tool-card-icon { background: var(--tool-accent-dim); }
+.tool-card.status-completed .tool-card-icon { background: var(--tool-success-dim); }
+.tool-card.status-error .tool-card-icon { background: var(--tool-error-dim); }
+
+.tool-card-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--tool-accent-dim);
+  border-top-color: var(--tool-accent);
+  border-radius: 50%;
+  animation: toolSpin 0.8s linear infinite;
+}
+
+.tool-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-card-name {
+  font-size: 13px;
   font-weight: 600;
-  color: var(--accent);
-  background: rgba(79, 143, 247, 0.06);
-  border-bottom: 1px solid var(--tool-border);
-  font-family: var(--font-mono);
+  color: var(--text-primary);
+  line-height: 1.3;
 }
 
-.tool-header .tool-icon {
-  font-size: 14px;
+.tool-card-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+.tool-card.status-running .tool-card-status {
+  color: var(--tool-accent);
+  animation: toolPulse 1.5s ease-in-out infinite;
+}
+.tool-card.status-completed .tool-card-status { color: var(--success); }
+.tool-card.status-error .tool-card-status { color: var(--error); }
+
+.tool-card-chevron {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.tool-card.collapsed .tool-card-chevron { transform: rotate(-90deg); }
+
+.tool-card-body {
+  max-height: 600px;
+  opacity: 1;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+  border-top: 1px solid var(--tool-border);
+}
+.tool-card.collapsed .tool-card-body {
+  max-height: 0;
+  opacity: 0;
+  border-top-color: transparent;
 }
 
-.tool-body {
-  padding: 10px 12px;
+.tool-card-section {
+  padding: 8px 14px 10px;
+}
+.tool-card-section + .tool-card-section {
+  border-top: 1px dashed var(--tool-border);
+}
+
+.tool-card-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.tool-card-section-content {
   font-size: 13px;
   font-family: var(--font-mono);
   color: var(--text-secondary);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 200px;
+  max-height: 300px;
   overflow-y: auto;
 }
-
-.tool-result .tool-header {
-  color: var(--success);
-  background: rgba(34, 197, 94, 0.06);
+.tool-card.status-error .tool-card-section.tool-output .tool-card-section-content {
+  color: var(--error);
 }
 
 /* -- Streaming / Typing -- */
@@ -1171,7 +1275,11 @@ body.drawer-pinned .session-overlay {
   .messages-container { padding: 14px; }
   .input-area { padding: 10px 14px; }
   .message-bubble { max-width: 92%; }
-  .thinking-block, .tool-block { max-width: 92%; }
+  .thinking-block, .tool-card { max-width: 92%; }
+  .tool-card-header { padding: 8px 10px; gap: 8px; }
+  .tool-card-icon { width: 24px; height: 24px; font-size: 13px; }
+  .tool-card-spinner { width: 14px; height: 14px; }
+  .tool-card-section { padding: 6px 10px 8px; }
   .media-image { max-width: 220px; }
   .media-file-card { max-width: 100%; }
   .media-video { max-width: 100%; }
@@ -1292,6 +1400,35 @@ let reconnectAttempts = 0;
 let reconnectTimer = null;
 let botConnected = false;
 let pendingFile = null;  // { file: File, previewUrl: string|null }
+
+// ===== Tool Card State =====
+let pendingToolCalls = new Map();  // pairKey -> {element, name}
+let toolCallCounters = {};         // name -> count
+let toolCardIdCounter = 0;
+
+const TOOL_DISPLAY = {
+  read: { label: 'Read File', icon: '\u{1F4C4}' },
+  exec: { label: 'Execute Command', icon: '\u25B6\uFE0F' },
+  write: { label: 'Write File', icon: '\u{1F4DD}' },
+  edit: { label: 'Edit File', icon: '\u2702\uFE0F' },
+  memory_search: { label: 'Search Memory', icon: '\u{1F9E0}' },
+  web_search: { label: 'Web Search', icon: '\u{1F50D}' },
+  bash: { label: 'Run Shell', icon: '\u{1F4BB}' },
+  python: { label: 'Run Python', icon: '\u{1F40D}' },
+  search: { label: 'Search', icon: '\u{1F50E}' },
+  list: { label: 'List Files', icon: '\u{1F4C1}' },
+  delete: { label: 'Delete', icon: '\u{1F5D1}\uFE0F' },
+};
+
+function getToolDisplay(name) {
+  if (TOOL_DISPLAY[name]) return TOOL_DISPLAY[name];
+  const label = name.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return { label, icon: '\u2699\uFE0F' };
+}
+
+function toggleToolCard(card) {
+  card.classList.toggle('collapsed');
+}
 
 // ===== Multi-session State =====
 let currentSessionId = null;
@@ -1551,6 +1688,8 @@ function disconnect() {
   currentAssistantEl = null;
   currentAssistantText = '';
   clearPendingFile();
+  pendingToolCalls.clear();
+  toolCallCounters = {};
 
   // Reset session state
   currentSessionId = null;
@@ -1597,7 +1736,7 @@ function handleServerMessage(msg) {
       handleToolCall(msg.name || 'unknown', msg.input || '');
       break;
     case 'tool_result':
-      handleToolResult(msg.content || '');
+      handleToolResult(msg.name || 'unknown', msg.status || 'completed', msg.content || '');
       break;
     case 'done':
       handleDone();
@@ -1655,8 +1794,7 @@ function handleThinking(content) {
 function handleToolCall(name, input) {
   finalizeStream();
   const list = document.getElementById('messages-list');
-  const block = document.createElement('div');
-  block.className = 'tool-block';
+  const display = getToolDisplay(name);
 
   let formattedInput = input;
   try {
@@ -1664,43 +1802,125 @@ function handleToolCall(name, input) {
     formattedInput = JSON.stringify(parsed, null, 2);
   } catch { /* keep original */ }
 
-  block.innerHTML = `
-    <div class="tool-header">
-      <span class="tool-icon">&#9881;</span>
-      <span>${escapeHtml(name)}</span>
+  const card = document.createElement('div');
+  card.className = 'tool-card status-running collapsed';
+  card.id = 'tool-card-' + (++toolCardIdCounter);
+  card.innerHTML = `
+    <div class="tool-card-header" onclick="toggleToolCard(this.parentElement)">
+      <div class="tool-card-icon"><div class="tool-card-spinner"></div></div>
+      <div class="tool-card-info">
+        <div class="tool-card-name">${display.icon} ${escapeHtml(display.label)}</div>
+        <div class="tool-card-status">Running...</div>
+      </div>
+      <span class="tool-card-chevron">&#9660;</span>
     </div>
-    <div class="tool-body">${escapeHtml(formattedInput)}</div>
+    <div class="tool-card-body">
+      <div class="tool-card-section">
+        <div class="tool-card-section-label">Input</div>
+        <div class="tool-card-section-content">${escapeHtml(formattedInput)}</div>
+      </div>
+    </div>
   `;
-  list.appendChild(block);
+  list.appendChild(card);
   scrollToBottom();
+
+  // Register for pairing with tool_result
+  if (!toolCallCounters[name]) toolCallCounters[name] = 0;
+  toolCallCounters[name]++;
+  const pairKey = name + ':' + toolCallCounters[name];
+  pendingToolCalls.set(pairKey, { element: card, name });
 }
 
-function handleToolResult(content) {
-  // Tool results may appear between chunks; don't finalize stream yet.
-  // Display as a collapsible block similar to tool_call.
-  const list = document.getElementById('messages-list');
-  const block = document.createElement('div');
-  block.className = 'tool-block';
+function handleToolResult(name, status, content) {
+  // Find matching tool_call by name (FIFO)
+  let matchedKey = null;
+  for (const [key, val] of pendingToolCalls) {
+    if (val.name === name) { matchedKey = key; break; }
+  }
 
-  let formatted = content;
+  const isError = status === 'error';
+  const statusClass = isError ? 'status-error' : 'status-completed';
+  const statusIcon = isError ? '\u2717' : '\u2713';
+  const statusText = isError ? 'Error' : 'Completed';
+
+  // Truncate long output
+  let displayContent = content;
+  if (displayContent.length > 5000) {
+    displayContent = displayContent.slice(0, 5000) + '\n\n(truncated)';
+  }
+  // Try to format JSON
+  let formatted = displayContent;
   try {
-    const parsed = JSON.parse(content);
+    const parsed = JSON.parse(displayContent);
     formatted = JSON.stringify(parsed, null, 2);
   } catch { /* keep original */ }
 
-  block.innerHTML = `
-    <div class="tool-header">
-      <span class="tool-icon">&#9881;</span>
-      <span>Tool Result</span>
-    </div>
-    <div class="tool-body">${escapeHtml(formatted)}</div>
-  `;
-  list.appendChild(block);
+  if (matchedKey) {
+    // Update existing card
+    const card = pendingToolCalls.get(matchedKey).element;
+    pendingToolCalls.delete(matchedKey);
+
+    card.className = card.className.replace('status-running', statusClass);
+
+    // Replace spinner with status icon
+    const iconEl = card.querySelector('.tool-card-icon');
+    if (iconEl) iconEl.innerHTML = '<span style="font-size:14px">' + statusIcon + '</span>';
+
+    // Update status text
+    const statusEl = card.querySelector('.tool-card-status');
+    if (statusEl) statusEl.textContent = statusText;
+
+    // Append output section
+    const body = card.querySelector('.tool-card-body');
+    if (body) {
+      const section = document.createElement('div');
+      section.className = 'tool-card-section tool-output';
+      section.innerHTML = `
+        <div class="tool-card-section-label">Output</div>
+        <div class="tool-card-section-content">${escapeHtml(formatted)}</div>
+      `;
+      body.appendChild(section);
+    }
+  } else {
+    // Orphan result — create standalone card
+    const list = document.getElementById('messages-list');
+    const display = getToolDisplay(name);
+    const card = document.createElement('div');
+    card.className = 'tool-card ' + statusClass + ' collapsed';
+    card.innerHTML = `
+      <div class="tool-card-header" onclick="toggleToolCard(this.parentElement)">
+        <div class="tool-card-icon"><span style="font-size:14px">${statusIcon}</span></div>
+        <div class="tool-card-info">
+          <div class="tool-card-name">${display.icon} ${escapeHtml(display.label)}</div>
+          <div class="tool-card-status">${statusText}</div>
+        </div>
+        <span class="tool-card-chevron">&#9660;</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tool-card-section tool-output">
+          <div class="tool-card-section-label">Output</div>
+          <div class="tool-card-section-content">${escapeHtml(formatted)}</div>
+        </div>
+      </div>
+    `;
+    list.appendChild(card);
+  }
   scrollToBottom();
 }
 
 function handleDone() {
   finalizeStream();
+  // Finalize any remaining pending tool calls
+  for (const [key, val] of pendingToolCalls) {
+    const card = val.element;
+    card.className = card.className.replace('status-running', 'status-completed');
+    const iconEl = card.querySelector('.tool-card-icon');
+    if (iconEl) iconEl.innerHTML = '<span style="font-size:14px">\u2713</span>';
+    const statusEl = card.querySelector('.tool-card-status');
+    if (statusEl) statusEl.textContent = 'Completed';
+  }
+  pendingToolCalls.clear();
+  toolCallCounters = {};
   setInputEnabled(true);
   document.getElementById('msg-input').focus();
 }
@@ -2168,6 +2388,8 @@ function handleNewSessionAck(msg) {
   sessionMeta[currentSessionId] = { preview: '', timestamp: Date.now() };
   document.getElementById('messages-list').innerHTML = '';
   finalizeStream();
+  pendingToolCalls.clear();
+  toolCallCounters = {};
   setInputEnabled(true);
   renderSessionPanel();
 }
@@ -2178,6 +2400,8 @@ function handleSwitchSessionAck(msg) {
   sessionList = msg.sessions || [];
   restoreSessionMessages(currentSessionId);
   finalizeStream();
+  pendingToolCalls.clear();
+  toolCallCounters = {};
   setInputEnabled(true);
   renderSessionPanel();
 }
