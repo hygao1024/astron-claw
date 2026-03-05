@@ -79,9 +79,31 @@ class ConnectionBridge:
                     "1",
                     ex=_WORKER_TTL,
                 )
+                # Re-sync this worker's presence in workers SET
+                await self._redis.sadd(_WORKERS_KEY, self._worker_id)
                 chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
                 if await self._redis.exists(chat_key):
                     await self._redis.expire(chat_key, _WORKER_TTL)
+                # Re-sync local bot registrations into Redis
+                for token in self._bots:
+                    await self._redis.sadd(_ONLINE_BOTS_KEY, token)
+                    await self._redis.hset(_BOT_WORKERS_KEY, token, self._worker_id)
+                # Clean stale worker IDs from workers SET
+                all_workers = await self._redis.smembers(_WORKERS_KEY)
+                for wid in all_workers:
+                    wid_str = wid if isinstance(wid, str) else wid.decode()
+                    if wid_str != self._worker_id and not await self._is_worker_alive(wid_str):
+                        await self._redis.srem(_WORKERS_KEY, wid_str)
+                        await self._redis.delete(f"{_CHAT_COUNTS_PREFIX}{wid_str}")
+                # Clean stale bot registrations owned by dead workers
+                bot_tokens = await self._redis.hgetall(_BOT_WORKERS_KEY)
+                for tok, owner in bot_tokens.items():
+                    tok_str = tok if isinstance(tok, str) else tok.decode()
+                    owner_str = owner if isinstance(owner, str) else owner.decode()
+                    if owner_str != self._worker_id and not await self._is_worker_alive(owner_str):
+                        await self._redis.srem(_ONLINE_BOTS_KEY, tok_str)
+                        await self._redis.hdel(_BOT_WORKERS_KEY, tok_str)
+                        await self._redis.delete(f"{_BOT_INBOX_PREFIX}{tok_str}")
             except Exception:
                 if not self._shutting_down:
                     logger.exception("Heartbeat refresh failed (worker={})", self._worker_id)
@@ -146,6 +168,31 @@ class ConnectionBridge:
     async def remove_bot_sessions(self, token: str) -> None:
         """Destroy session data for a token. Called only on admin token delete."""
         await self._session_store.remove_sessions(token)
+
+        # Disconnect local bot if on this worker
+        if token in self._bots:
+            bot_ws = self._bots[token]
+            try:
+                await bot_ws.close(code=4003, reason="Token deleted")
+            except Exception:
+                pass
+            await self.unregister_bot(token)
+        else:
+            # Bot may be on a remote worker — push disconnect command to inbox
+            inbox = f"{_BOT_INBOX_PREFIX}{token}"
+            await self._redis.rpush(inbox, json.dumps({"_disconnect": True}))
+            await self._redis.expire(inbox, _INBOX_TTL)
+
+        # Disconnect local chat clients for this token
+        if token in self._chats:
+            for ws in list(self._chats.get(token, [])):
+                try:
+                    await ws.close(code=4003, reason="Token deleted")
+                except Exception:
+                    pass
+                await self.unregister_chat(token, ws)
+
+        # Clean remaining Redis keys
         await self._redis.srem(_ONLINE_BOTS_KEY, token)
         await self._redis.hdel(_BOT_WORKERS_KEY, token)
         await self._redis.delete(f"{_BOT_INBOX_PREFIX}{token}")
@@ -426,6 +473,16 @@ class ConnectionBridge:
                     await asyncio.sleep(_POLL_INTERVAL)
                     continue
                 data = json.loads(raw)
+                # Handle disconnect command from admin token delete
+                if data.get("_disconnect"):
+                    bot_ws = self._bots.get(token)
+                    if bot_ws:
+                        try:
+                            await bot_ws.close(code=4003, reason="Token deleted")
+                        except Exception:
+                            pass
+                    logger.info("Inbox: received disconnect for bot (token={}...)", token[:10])
+                    break
                 bot_ws = self._bots.get(token)
                 if bot_ws:
                     await bot_ws.send_json(data["rpc_request"])
