@@ -1,12 +1,16 @@
 import asyncio
 import json
+import time
 import uuid
 from typing import TYPE_CHECKING, Optional
 
 from fastapi import WebSocket
+from opentelemetry import trace
+from opentelemetry.trace import SpanContext, TraceFlags
 from redis.asyncio import Redis
 
 from infra.log import logger
+from infra.telemetry import get_tracer
 
 if TYPE_CHECKING:
     from services.session_store import SessionStore
@@ -23,6 +27,10 @@ _WORKER_TTL = 30        # heartbeat TTL (seconds)
 _HEARTBEAT_INTERVAL = 10  # how often each worker refreshes its heartbeat
 _POLL_INTERVAL = 1.0     # seconds to sleep when inbox is empty
 _INBOX_TTL = 60          # TTL on inbox keys to auto-clean dead connections
+_SPAN_MAX_DURATION = 300  # safety-net TTL for long-lived spans (seconds)
+_MAX_SPAN_ATTR_LEN = 500  # max character length for span event attributes
+
+tracer = get_tracer()
 
 
 class ConnectionBridge:
@@ -50,8 +58,16 @@ class ConnectionBridge:
         self._chats: dict[str, set[WebSocket]] = {}
         # WebSocket -> (token, session_id) for cleanup on unregister
         self._chat_sessions: dict[WebSocket, tuple[str, str]] = {}
-        # request_id -> (token, session_id) for targeted response routing
-        self._pending_requests: dict[str, tuple[str, str]] = {}
+        # request_id -> (token, session_id, trace_context) for targeted response routing
+        self._pending_requests: dict[str, tuple[str, str, dict | None]] = {}
+        # Long-lived response spans: "{token}:{session_id}" -> Span
+        self._response_spans: dict[str, trace.Span] = {}
+        # Active request context: "{token}:{session_id}" -> (request_id, trace_context)
+        self._active_request_ctx: dict[str, tuple[str, dict | None]] = {}
+        # Long-lived chat request spans: "{token}:{session_id}" -> Span
+        self._chat_request_spans: dict[str, trace.Span] = {}
+        # Monotonic timestamps for span creation — used by TTL cleanup
+        self._span_start_times: dict[str, float] = {}
         # media manager reference
         self._media_manager = None
         # Redis client for cross-worker state
@@ -104,6 +120,8 @@ class ConnectionBridge:
                         await self._redis.srem(_ONLINE_BOTS_KEY, tok_str)
                         await self._redis.hdel(_BOT_WORKERS_KEY, tok_str)
                         await self._redis.delete(f"{_BOT_INBOX_PREFIX}{tok_str}")
+                # Clean long-lived spans that exceeded the safety-net TTL
+                self._cleanup_stale_spans()
             except Exception:
                 if not self._shutting_down:
                     logger.exception("Heartbeat refresh failed (worker={})", self._worker_id)
@@ -112,6 +130,33 @@ class ConnectionBridge:
     async def _is_worker_alive(self, worker_id: str) -> bool:
         """Return True if the given worker's heartbeat key is still present."""
         return bool(await self._redis.exists(f"{_WORKER_HEARTBEAT_PREFIX}{worker_id}"))
+
+    def _cleanup_stale_spans(self) -> None:
+        """End long-lived spans that exceeded *_SPAN_MAX_DURATION*.
+
+        Acts as a safety net for the case where a bot silently disconnects
+        or network issues prevent the normal done/error events from arriving.
+        """
+        now = time.monotonic()
+        stale = [
+            k for k, t in self._span_start_times.items()
+            if now - t > _SPAN_MAX_DURATION
+        ]
+        for key in stale:
+            for spans in (self._response_spans, self._chat_request_spans):
+                span = spans.pop(key, None)
+                if span:
+                    span.add_event("span.timeout")
+                    span.end()
+            self._active_request_ctx.pop(key, None)
+            self._span_start_times.pop(key, None)
+        if stale:
+            logger.warning("Cleaned {} stale span(s) exceeding {}s", len(stale), _SPAN_MAX_DURATION)
+
+    def _maybe_clean_span_timestamp(self, session_key: str) -> None:
+        """Remove the span timestamp when no active spans remain for *session_key*."""
+        if session_key not in self._response_spans and session_key not in self._chat_request_spans:
+            self._span_start_times.pop(session_key, None)
 
     def set_media_manager(self, media_manager) -> None:
         """Set the media manager for resolving download URLs in messages."""
@@ -147,6 +192,13 @@ class ConnectionBridge:
     async def unregister_bot(self, token: str) -> None:
         """Remove bot from local dict + clean up Redis and inbox."""
         self._bots.pop(token, None)
+        # End any active response spans for this token
+        for key in [k for k in self._response_spans if k.startswith(f"{token}:")]:
+            span = self._response_spans.pop(key)
+            span.add_event("bot.disconnect", {"reason": "bot disconnected"})
+            span.end()
+            self._active_request_ctx.pop(key, None)
+            self._maybe_clean_span_timestamp(key)
         # Stop bot inbox polling
         task_key = f"bot:{token}"
         task = self._poll_tasks.pop(task_key, None)
@@ -267,6 +319,13 @@ class ConnectionBridge:
                 except asyncio.CancelledError:
                     pass
             await self._redis.delete(f"{_CHAT_INBOX_PREFIX}{token}:{session_id}")
+            # End any active chat request span for this session
+            session_key = f"{token}:{session_id}"
+            span = self._chat_request_spans.pop(session_key, None)
+            if span:
+                span.add_event("chat.disconnect", {"reason": "chat client disconnected"})
+                span.end()
+            self._maybe_clean_span_timestamp(session_key)
             logger.info("Chat unregistered: session={} (token={}...)", session_id[:8], token[:10])
         else:
             logger.info("Chat unregistered (token={}...)", token[:10])
@@ -343,13 +402,50 @@ class ConnectionBridge:
         msg_type: str = "text",
         media: Optional[dict] = None,
     ) -> Optional[str]:
-        """Create a JSON-RPC request and send it to the bot."""
+        """Create a JSON-RPC request and send it to the bot.
+
+        Also starts a long-lived ``/bridge/chat`` span that tracks the full
+        request-response cycle (user input → bot reply delivered to chat WS).
+        The span is ended in ``_poll_chat_inbox`` when done/error is delivered.
+        """
         session_id = await self.get_active_session(token)
         if not session_id:
             session_id, _ = await self.create_session(token)
 
         request_id = f"req_{uuid.uuid4().hex[:12]}"
-        self._pending_requests[request_id] = (token, session_id)
+        session_key = f"{token}:{session_id}"
+
+        # End any previous unfinished chat span for this session
+        old_chat_span = self._chat_request_spans.pop(session_key, None)
+        if old_chat_span:
+            old_chat_span.add_event("chat.superseded", {"reason": "new request before previous completed"})
+            old_chat_span.end()
+
+        # Start a long-lived chat request span (ended when bot reply is delivered)
+        chat_span = tracer.start_span(
+            "/bridge/chat",
+            attributes={
+                "astron.token": token,
+                "astron.session_id": session_id,
+                "astron.request_id": request_id,
+                "astron.msg_type": msg_type,
+                "astron.worker_id": self._worker_id,
+            },
+        )
+        chat_span.add_event("user.message", {"content": user_message[:_MAX_SPAN_ATTR_LEN] if user_message else ""})
+        self._chat_request_spans[session_key] = chat_span
+        self._span_start_times[session_key] = time.monotonic()
+
+        # Capture trace context for cross-Redis propagation (span links)
+        chat_ctx = chat_span.get_span_context()
+        trace_context: dict | None = None
+        if chat_ctx and chat_ctx.trace_id:
+            trace_context = {
+                "trace_id": format(chat_ctx.trace_id, "032x"),
+                "span_id": format(chat_ctx.span_id, "016x"),
+            }
+        self._pending_requests[request_id] = (token, session_id, trace_context)
+        self._active_request_ctx[session_key] = (request_id, trace_context)
 
         # Build prompt content
         content_items = []
@@ -387,6 +483,10 @@ class ConnectionBridge:
             },
         }
 
+        # Inject trace context for cross-Redis propagation
+        if trace_context:
+            rpc_request["_trace_context"] = trace_context
+
         # Always route via inbox (works for both local and remote workers)
         try:
             inbox = f"{_BOT_INBOX_PREFIX}{token}"
@@ -395,6 +495,12 @@ class ConnectionBridge:
         except Exception:
             logger.exception("Failed to push to bot inbox (token={}...)", token[:10])
             self._pending_requests.pop(request_id, None)
+            # End chat span on send failure
+            span = self._chat_request_spans.pop(session_key, None)
+            if span:
+                span.set_attribute("error", True)
+                span.add_event("send.error", {"reason": "Failed to push to bot inbox"})
+                span.end()
             return None
         logger.info("Sent to bot (inbox): req={} type={} (token={}...)", request_id, msg_type, token[:10])
         return request_id
@@ -412,41 +518,104 @@ class ConnectionBridge:
 
         method = msg.get("method", "")
         params = msg.get("params", {})
+        msg_id = msg.get("id", "")
 
+        # Resolve session_id from params, pending_requests, or active session
+        session_id: str | None = None
+        if isinstance(params, dict):
+            session_id = params.get("sessionId")
+        if not session_id and msg_id and msg_id in self._pending_requests:
+            session_id = self._pending_requests[msg_id][1]
+        if not session_id:
+            session_id = await self.get_active_session(token)
+
+        # Get or create a long-lived response span for this request cycle
+        session_key = f"{token}:{session_id}" if session_id else None
+        span = self._response_spans.get(session_key) if session_key else None
+        if session_key and not span:
+            links: list[trace.Link] = []
+            req_id, tc = self._active_request_ctx.get(session_key, (None, None))
+            if tc:
+                try:
+                    original_ctx = SpanContext(
+                        trace_id=int(tc["trace_id"], 16),
+                        span_id=int(tc["span_id"], 16),
+                        is_remote=True,
+                        trace_flags=TraceFlags(0x01),
+                    )
+                    links.append(trace.Link(original_ctx))
+                except (KeyError, ValueError):
+                    pass
+            # End any previous unfinished response span for this session
+            old_span = self._response_spans.pop(session_key, None)
+            if old_span:
+                old_span.add_event("bot.superseded", {"reason": "new response cycle before previous completed"})
+                old_span.end()
+            span = tracer.start_span(
+                "bridge.bot_response",
+                links=links,
+                attributes={
+                    "astron.token": token,
+                    "astron.session_id": session_id or "",
+                    "astron.worker_id": self._worker_id,
+                    "astron.request_id": req_id or "",
+                },
+            )
+            self._response_spans[session_key] = span
+            self._span_start_times.setdefault(session_key, time.monotonic())
+
+        # ── Method-based notifications (streaming chunks, tool calls, etc.) ──
         if method:
             chat_event = _translate_bot_event(method, params)
-            # Notifications carry sessionId in params; route to that session
-            session_id = params.get("sessionId") if params else None
-            if not session_id:
-                session_id = await self.get_active_session(token)
-            # Chunk events are high-frequency — use DEBUG to avoid flooding INFO
-            if chat_event and chat_event.get("type") in ("chunk", "thinking"):
-                logger.debug("Bot event: method={} type={} session={} (token={}...)", method, chat_event["type"], session_id[:8] if session_id else "?", token[:10])
-            else:
-                logger.info("Bot event: method={} session={} (token={}...)", method, session_id[:8] if session_id else "?", token[:10])
             if chat_event:
+                event_type = chat_event.get("type", "")
+                if span:
+                    log_attrs = _event_log_attrs(chat_event)
+                    if log_attrs:
+                        span.add_event(f"bot.{event_type}", log_attrs)
+                if event_type in ("chunk", "thinking"):
+                    logger.debug("Bot event: method={} type={} session={} (token={}...)", method, event_type, session_id[:8] if session_id else "?", token[:10])
+                else:
+                    logger.info("Bot event: method={} session={} (token={}...)", method, session_id[:8] if session_id else "?", token[:10])
                 if session_id:
                     await self._send_to_session(token, session_id, chat_event)
             else:
                 logger.warning("Bot event dropped: method={} untranslatable (token={}...)", method, token[:10])
 
+        # ── JSON-RPC result → end response span ─────────────────────────────
         if "id" in msg and "result" in msg:
             info = self._pending_requests.pop(msg["id"], None)
             done_event = _translate_bot_result(msg["result"])
-            session_id = info[1] if info else await self.get_active_session(token)
-            logger.info("Bot result: req={} session={} (token={}...)", msg["id"], session_id[:8] if session_id else "?", token[:10])
-            if done_event:
-                if session_id:
-                    await self._send_to_session(token, session_id, done_event)
+            result_sid = info[1] if info else session_id
+            stop_reason = msg["result"].get("stopReason", "")
+            if span:
+                span.add_event("bot.result", {"stopReason": stop_reason})
+            logger.info("Bot result: req={} session={} (token={}...)", msg["id"], result_sid[:8] if result_sid else "?", token[:10])
+            if done_event and result_sid:
+                await self._send_to_session(token, result_sid, done_event)
+            self._end_response_span(session_key or f"{token}:{result_sid}")
 
-        if "id" in msg and "error" in msg:
+        # ── JSON-RPC error → end response span (elif: mutually exclusive with result) ──
+        elif "id" in msg and "error" in msg:
             info = self._pending_requests.pop(msg["id"], None)
             error_msg = msg["error"].get("message", "Unknown error from bot")
             logger.error("Bot JSON-RPC error: {} (token={}...)", error_msg, token[:10])
+            if span:
+                span.set_attribute("error", True)
+                span.add_event("bot.error", {"message": error_msg})
             error_event = {"type": "error", "content": error_msg}
-            session_id = info[1] if info else await self.get_active_session(token)
-            if session_id:
-                await self._send_to_session(token, session_id, error_event)
+            error_sid = info[1] if info else session_id
+            if error_sid:
+                await self._send_to_session(token, error_sid, error_event)
+            self._end_response_span(session_key or f"{token}:{error_sid}")
+
+    def _end_response_span(self, session_key: str) -> None:
+        """End and remove a long-lived response span."""
+        span = self._response_spans.pop(session_key, None)
+        if span:
+            span.end()
+        self._active_request_ctx.pop(session_key, None)
+        self._maybe_clean_span_timestamp(session_key)
 
     # ── Bot status notifications ──────────────────────────────────────────────
 
@@ -511,14 +680,39 @@ class ConnectionBridge:
                     await asyncio.sleep(1)
 
     async def _poll_chat_inbox(self, token: str, session_id: str, ws: WebSocket) -> None:
-        """Poll chat_inbox:{token}:{session_id} and forward messages to the chat WS."""
+        """Poll chat_inbox:{token}:{session_id} and forward messages to the chat WS.
+
+        Also appends bot response events as Logs to the long-lived ``/bridge/chat``
+        span and ends it when a ``done`` or ``error`` event is delivered.
+        """
         inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
+        session_key = f"{token}:{session_id}"
         while not self._shutting_down:
             try:
                 raw = await self._redis.lpop(inbox)
                 if raw is None:
                     await asyncio.sleep(_POLL_INTERVAL)
                     continue
+
+                # Append event as Log to chat request span
+                try:
+                    event = json.loads(raw)
+                    event_type = event.get("type", "")
+                    chat_span = self._chat_request_spans.get(session_key)
+                    if chat_span and event_type:
+                        log_attrs = _event_log_attrs(event)
+                        if log_attrs:
+                            chat_span.add_event(f"bot.{event_type}", log_attrs)
+                        # End chat span when response cycle is complete
+                        if event_type in ("done", "error"):
+                            if event_type == "error":
+                                chat_span.set_attribute("error", True)
+                            chat_span.end()
+                            self._chat_request_spans.pop(session_key, None)
+                            self._maybe_clean_span_timestamp(session_key)
+                except (json.JSONDecodeError, Exception):
+                    pass  # Don't break delivery on span bookkeeping errors
+
                 await ws.send_text(raw)
                 logger.debug("Chat inbox delivered: session={} (token={}...)", session_id[:8], token[:10])
             except asyncio.CancelledError:
@@ -563,6 +757,20 @@ class ConnectionBridge:
         await self._redis.delete(f"{_CHAT_COUNTS_PREFIX}{self._worker_id}")
         await self._redis.srem(_WORKERS_KEY, self._worker_id)
         self._pending_requests.clear()
+
+        # End all active response spans
+        for span in self._response_spans.values():
+            span.add_event("bot.shutdown", {"reason": "server shutting down"})
+            span.end()
+        self._response_spans.clear()
+        self._active_request_ctx.clear()
+
+        # End all active chat request spans
+        for span in self._chat_request_spans.values():
+            span.add_event("chat.shutdown", {"reason": "server shutting down"})
+            span.end()
+        self._chat_request_spans.clear()
+        self._span_start_times.clear()
 
         # Cancel all polling tasks
         for task in self._poll_tasks.values():
@@ -644,3 +852,30 @@ def _translate_bot_result(result: dict) -> Optional[dict]:
     if stop_reason:
         return {"type": "done"}
     return None
+
+
+def _event_log_attrs(chat_event: dict) -> dict:
+    """Extract span log attributes from a translated chat event."""
+    event_type = chat_event.get("type", "")
+    if event_type == "tool_call":
+        return {"name": chat_event.get("name", ""), "input": str(chat_event.get("input", ""))[:_MAX_SPAN_ATTR_LEN]}
+    if event_type == "tool_result":
+        return {
+            "name": chat_event.get("name", ""),
+            "status": chat_event.get("status", ""),
+            "content": str(chat_event.get("content", ""))[:_MAX_SPAN_ATTR_LEN],
+        }
+    if event_type == "message":
+        attrs: dict = {"msgType": chat_event.get("msgType", "")}
+        content = chat_event.get("content", "")
+        if content:
+            attrs["content"] = str(content)[:_MAX_SPAN_ATTR_LEN]
+        media = chat_event.get("media")
+        if media:
+            attrs["fileName"] = media.get("fileName", "")
+        return attrs
+    # chunk, thinking, done, etc. — use content field
+    content = chat_event.get("content", "")
+    if content:
+        return {"content": str(content)[:_MAX_SPAN_ATTR_LEN]}
+    return {}

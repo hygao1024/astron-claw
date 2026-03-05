@@ -81,6 +81,13 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+def get_engine() -> AsyncEngine:
+    """Return the global async engine. Must call init_db() first."""
+    if _engine is None:
+        raise RuntimeError("Database not initialized. Call init_db() first.")
+    return _engine
+
+
 async def close_db() -> None:
     """Dispose the engine and release all connections."""
     global _engine, _session_factory
