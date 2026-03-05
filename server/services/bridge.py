@@ -217,7 +217,7 @@ class ConnectionBridge:
         self._poll_tasks[task_key] = asyncio.create_task(
             self._poll_chat_inbox(token, session_id, ws)
         )
-        logger.debug("Chat registered: session={} (token={}...)", session_id[:8], token[:10])
+        logger.info("Chat registered: session={} (token={}...)", session_id[:8], token[:10])
 
     async def update_chat_session(self, ws: WebSocket, new_session_id: str) -> None:
         """Update a chat connection's session: stop old poll task, start new one."""
@@ -267,6 +267,9 @@ class ConnectionBridge:
                 except asyncio.CancelledError:
                     pass
             await self._redis.delete(f"{_CHAT_INBOX_PREFIX}{token}:{session_id}")
+            logger.info("Chat unregistered: session={} (token={}...)", session_id[:8], token[:10])
+        else:
+            logger.info("Chat unregistered (token={}...)", token[:10])
 
     # ── Queries (read from Redis for cluster-wide view) ───────────────────────
 
@@ -412,19 +415,27 @@ class ConnectionBridge:
 
         if method:
             chat_event = _translate_bot_event(method, params)
+            # Notifications carry sessionId in params; route to that session
+            session_id = params.get("sessionId") if params else None
+            if not session_id:
+                session_id = await self.get_active_session(token)
+            # Chunk events are high-frequency — use DEBUG to avoid flooding INFO
+            if chat_event and chat_event.get("type") in ("chunk", "thinking"):
+                logger.debug("Bot event: method={} type={} session={} (token={}...)", method, chat_event["type"], session_id[:8] if session_id else "?", token[:10])
+            else:
+                logger.info("Bot event: method={} session={} (token={}...)", method, session_id[:8] if session_id else "?", token[:10])
             if chat_event:
-                # Notifications carry sessionId in params; route to that session
-                session_id = params.get("sessionId") if params else None
-                if not session_id:
-                    session_id = await self.get_active_session(token)
                 if session_id:
                     await self._send_to_session(token, session_id, chat_event)
+            else:
+                logger.warning("Bot event dropped: method={} untranslatable (token={}...)", method, token[:10])
 
         if "id" in msg and "result" in msg:
             info = self._pending_requests.pop(msg["id"], None)
             done_event = _translate_bot_result(msg["result"])
+            session_id = info[1] if info else await self.get_active_session(token)
+            logger.info("Bot result: req={} session={} (token={}...)", msg["id"], session_id[:8] if session_id else "?", token[:10])
             if done_event:
-                session_id = info[1] if info else await self.get_active_session(token)
                 if session_id:
                     await self._send_to_session(token, session_id, done_event)
 
@@ -440,11 +451,13 @@ class ConnectionBridge:
     # ── Bot status notifications ──────────────────────────────────────────────
 
     async def notify_bot_connected(self, token: str) -> None:
+        logger.info("Bot status -> connected (token={}...)", token[:10])
         session_id = await self.get_active_session(token)
         if session_id:
             await self._send_to_session(token, session_id, {"type": "bot_status", "connected": True})
 
     async def notify_bot_disconnected(self, token: str) -> None:
+        logger.info("Bot status -> disconnected (token={}...)", token[:10])
         session_id = await self.get_active_session(token)
         if session_id:
             await self._send_to_session(token, session_id, {"type": "bot_status", "connected": False})
@@ -457,6 +470,7 @@ class ConnectionBridge:
             inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
             await self._redis.rpush(inbox, json.dumps(event))
             await self._redis.expire(inbox, _INBOX_TTL)
+            logger.debug("Event pushed to session inbox: type={} session={} (token={}...)", event.get("type"), session_id[:8], token[:10])
         except Exception:
             if not self._shutting_down:
                 logger.exception("Failed to send to session inbox (token={}... session={}...)", token[:10], session_id[:8])
@@ -487,6 +501,8 @@ class ConnectionBridge:
                 if bot_ws:
                     await bot_ws.send_json(data["rpc_request"])
                     logger.info("Inbox: forwarded to local bot (token={}...)", token[:10])
+                else:
+                    logger.warning("Inbox: bot WS gone, message dropped (token={}...)", token[:10])
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -504,6 +520,7 @@ class ConnectionBridge:
                     await asyncio.sleep(_POLL_INTERVAL)
                     continue
                 await ws.send_text(raw)
+                logger.debug("Chat inbox delivered: session={} (token={}...)", session_id[:8], token[:10])
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -579,7 +596,6 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
         if update_type == "agent_message_final":
             return {"type": "done", "content": content.get("text", "")}
         if update_type == "tool_result":
-            logger.info("TOOL_RESULT update: {}", json.dumps(update, ensure_ascii=False)[:500])
             result_text = update.get("content", "")
             if not isinstance(result_text, str):
                 if isinstance(result_text, dict):
@@ -592,7 +608,6 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
         if update_type == "agent_thought_chunk":
             return {"type": "thinking", "content": content.get("text", "")}
         if update_type == "tool_call":
-            logger.info("TOOL_CALL update: {}", json.dumps(update, ensure_ascii=False)[:500])
             title = update.get("title", "tool")
             input_text = update.get("content", "")
             if not isinstance(input_text, str):
@@ -615,7 +630,9 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
             }
 
         if isinstance(content, dict) and "text" in content:
+            logger.debug("Bot event fallback to chunk: sessionUpdate={} (unknown type)", update_type)
             return {"type": "chunk", "content": content["text"]}
+        logger.warning("Bot event untranslatable: sessionUpdate={}", update_type)
         return None
 
     return None

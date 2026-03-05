@@ -88,8 +88,10 @@ async def ws_chat(
             msg_type = data.get("type", "")
 
             if msg_type == "new_session":
+                logger.info("Chat new_session requested (token={}...)", token[:10])
                 new_id, new_num = await state.bridge.create_session(token)
                 await state.bridge.update_chat_session(ws, new_id)
+                session_id = new_id
                 sessions, active_id = await state.bridge.get_sessions(token)
                 await ws.send_json({
                     "type": "new_session_ack",
@@ -102,8 +104,10 @@ async def ws_chat(
 
             if msg_type == "switch_session":
                 target_id = data.get("sessionId", "")
+                logger.info("Chat switch_session requested: target={} (token={}...)", target_id[:8], token[:10])
                 if await state.bridge.switch_session(token, target_id):
                     await state.bridge.update_chat_session(ws, target_id)
+                    session_id = target_id
                     sessions, active_id = await state.bridge.get_sessions(token)
                     await ws.send_json({
                         "type": "switch_session_ack",
@@ -112,6 +116,7 @@ async def ws_chat(
                         "activeSessionId": active_id,
                     })
                 else:
+                    logger.warning("Chat switch_session failed: session {} not found (token={}...)", target_id[:8], token[:10])
                     await ws.send_json({
                         "type": "error",
                         "content": f"Session {target_id} not found",
@@ -122,16 +127,20 @@ async def ws_chat(
                 msg_type_inner = data.get("msgType", "text")
                 content = data.get("content", "")
                 media = data.get("media")
+                logger.info("Chat message received: type={} session={} (token={}...)", msg_type_inner, session_id[:8], token[:10])
 
                 if msg_type_inner == "text" and not content:
+                    logger.warning("Chat message rejected: empty text (token={}...)", token[:10])
                     await ws.send_json({"type": "error", "content": "Empty message"})
                     continue
 
                 if msg_type_inner in ("image", "file", "audio", "video") and not media:
+                    logger.warning("Chat message rejected: missing media for type={} (token={}...)", msg_type_inner, token[:10])
                     await ws.send_json({"type": "error", "content": "Missing media info"})
                     continue
 
                 if not await state.bridge.is_bot_connected(token):
+                    logger.warning("Chat message rejected: bot not connected (token={}...)", token[:10])
                     await ws.send_json({"type": "error", "content": "No bot connected"})
                     continue
 
@@ -141,6 +150,7 @@ async def ws_chat(
                     media=media,
                 )
                 if not req_id:
+                    logger.warning("Chat send_to_bot failed (token={}...)", token[:10])
                     await ws.send_json({"type": "error", "content": "Failed to send to bot"})
 
     except WebSocketDisconnect:
