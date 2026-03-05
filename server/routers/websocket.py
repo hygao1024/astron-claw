@@ -1,9 +1,11 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from infra.log import logger
+from infra.telemetry import get_tracer
 import services.state as state
 
 router = APIRouter()
+tracer = get_tracer()
 
 
 @router.websocket("/bridge/bot")
@@ -27,6 +29,7 @@ async def ws_bot(
         return
 
     logger.info("Bot connected: {}...", bot_token[:10])
+
     await state.bridge.notify_bot_connected(bot_token)
     try:
         while True:
@@ -88,39 +91,47 @@ async def ws_chat(
             msg_type = data.get("type", "")
 
             if msg_type == "new_session":
-                logger.info("Chat new_session requested (token={}...)", token[:10])
-                new_id, new_num = await state.bridge.create_session(token)
-                await state.bridge.update_chat_session(ws, new_id)
-                session_id = new_id
-                sessions, active_id = await state.bridge.get_sessions(token)
-                await ws.send_json({
-                    "type": "new_session_ack",
-                    "sessionId": new_id,
-                    "sessionNumber": new_num,
-                    "sessions": [{"id": s[0], "number": s[1]} for s in sessions],
-                    "activeSessionId": active_id,
-                })
+                with tracer.start_as_current_span(
+                    "ws.chat.new_session",
+                    attributes={"astron.token": token},
+                ):
+                    logger.info("Chat new_session requested (token={}...)", token[:10])
+                    new_id, new_num = await state.bridge.create_session(token)
+                    await state.bridge.update_chat_session(ws, new_id)
+                    session_id = new_id
+                    sessions, active_id = await state.bridge.get_sessions(token)
+                    await ws.send_json({
+                        "type": "new_session_ack",
+                        "sessionId": new_id,
+                        "sessionNumber": new_num,
+                        "sessions": [{"id": s[0], "number": s[1]} for s in sessions],
+                        "activeSessionId": active_id,
+                    })
                 continue
 
             if msg_type == "switch_session":
                 target_id = data.get("sessionId", "")
-                logger.info("Chat switch_session requested: target={} (token={}...)", target_id[:8], token[:10])
-                if await state.bridge.switch_session(token, target_id):
-                    await state.bridge.update_chat_session(ws, target_id)
-                    session_id = target_id
-                    sessions, active_id = await state.bridge.get_sessions(token)
-                    await ws.send_json({
-                        "type": "switch_session_ack",
-                        "sessionId": target_id,
-                        "sessions": [{"id": s[0], "number": s[1]} for s in sessions],
-                        "activeSessionId": active_id,
-                    })
-                else:
-                    logger.warning("Chat switch_session failed: session {} not found (token={}...)", target_id[:8], token[:10])
-                    await ws.send_json({
-                        "type": "error",
-                        "content": f"Session {target_id} not found",
-                    })
+                with tracer.start_as_current_span(
+                    "ws.chat.switch_session",
+                    attributes={"astron.token": token, "astron.session_id": target_id},
+                ):
+                    logger.info("Chat switch_session requested: target={} (token={}...)", target_id[:8], token[:10])
+                    if await state.bridge.switch_session(token, target_id):
+                        await state.bridge.update_chat_session(ws, target_id)
+                        session_id = target_id
+                        sessions, active_id = await state.bridge.get_sessions(token)
+                        await ws.send_json({
+                            "type": "switch_session_ack",
+                            "sessionId": target_id,
+                            "sessions": [{"id": s[0], "number": s[1]} for s in sessions],
+                            "activeSessionId": active_id,
+                        })
+                    else:
+                        logger.warning("Chat switch_session failed: session {} not found (token={}...)", target_id[:8], token[:10])
+                        await ws.send_json({
+                            "type": "error",
+                            "content": f"Session {target_id} not found",
+                        })
                 continue
 
             if msg_type == "message":

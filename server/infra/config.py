@@ -46,10 +46,19 @@ class ServerConfig:
 
 
 @dataclass(frozen=True)
+class OtelConfig:
+    enabled: bool
+    service_name: str
+    otlp_endpoint: str
+    metrics_enabled: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     mysql: MysqlConfig
     redis: RedisConfig
     server: ServerConfig
+    otel: OtelConfig
 
 
 def load_config() -> AppConfig:
@@ -74,5 +83,13 @@ def load_config() -> AppConfig:
             workers=int(os.getenv("SERVER_WORKERS", str((os.cpu_count() or 1) + 1))),
             log_level=os.getenv("SERVER_LOG_LEVEL", "info"),
             access_log=os.getenv("SERVER_ACCESS_LOG", "true").lower() == "true",
+        ),
+        otel=OtelConfig(
+            enabled=os.getenv("OTEL_ENABLED", "false").lower() == "true",
+            service_name=os.getenv("OTEL_SERVICE_NAME", "astron-claw"),
+            otlp_endpoint=os.getenv(
+                "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"
+            ),
+            metrics_enabled=os.getenv("OTEL_METRICS_ENABLED", "false").lower() == "true",
         ),
     )

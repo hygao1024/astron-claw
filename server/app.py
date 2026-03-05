@@ -8,6 +8,7 @@ from infra.log import logger
 from infra.config import load_config
 from infra.database import init_db, get_session_factory, close_db
 from infra.cache import init_redis, close_redis
+from infra.telemetry import setup_telemetry, shutdown_telemetry_async, TraceMiddleware
 
 from services.token_manager import TokenManager
 from services.bridge import ConnectionBridge
@@ -22,6 +23,16 @@ from routers import health, tokens, admin_auth, admin, media, websocket
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = load_config()
+
+    # Telemetry first — so spans are available during subsequent init steps.
+    # Placed inside lifespan (not module-level) so each uvicorn worker
+    # process initialises its own TracerProvider after fork.
+    setup_telemetry(
+        enabled=config.otel.enabled,
+        service_name=config.otel.service_name,
+        otlp_endpoint=config.otel.otlp_endpoint,
+        metrics_enabled=config.otel.metrics_enabled,
+    )
 
     # Initialize MySQL
     await init_db(config.mysql)
@@ -39,6 +50,13 @@ async def lifespan(app: FastAPI):
     state.bridge.set_media_manager(state.media_manager)
     await state.bridge.start()
 
+    # Auto-instrumentors (FastAPI, SQLAlchemy, Redis) are intentionally
+    # disabled.  For this WebSocket-centric service they generate massive
+    # noise (HTTP upgrade spans, every SELECT/LPOP/SET).  Observability:
+    #   - TraceMiddleware in telemetry.py → root spans named by URL
+    #   - Manual spans in websocket.py / bridge.py for business logic
+    #   - Loguru sink in log.py auto-bridging logs → Span Events
+
     # Resolve frontend directory
     _server_dir = Path(__file__).resolve().parent
     _candidate = _server_dir.parent / "frontend"
@@ -47,14 +65,16 @@ async def lifespan(app: FastAPI):
     logger.info("Astron Claw Bridge Server started")
     yield
 
-    # Shutdown — close connections + stop pub/sub before closing infrastructure
+    # Shutdown — close connections + flush telemetry before closing infrastructure
     await state.bridge.shutdown()
+    await shutdown_telemetry_async()
     await close_redis()
     await close_db()
     logger.info("Astron Claw Bridge Server stopped")
 
 
 app = FastAPI(title="Astron Claw Bridge Server", lifespan=lifespan)
+app.add_middleware(TraceMiddleware)
 
 # ── Register routers ─────────────────────────────────────────────────────────
 app.include_router(health.router)
