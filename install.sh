@@ -268,7 +268,9 @@ fi
 # ---------------------------------------------------------------------------
 # Verify plugin can be loaded
 # ---------------------------------------------------------------------------
-if [ -f "$TARGET_DIR/dist/index.js" ]; then
+if [ -f "$TARGET_DIR/index.ts" ]; then
+  log "plugin entry point found: index.ts"
+elif [ -f "$TARGET_DIR/dist/index.js" ]; then
   if node -e "import('$TARGET_DIR/dist/index.js').then(() => process.exit(0)).catch(() => process.exit(1))" 2>/dev/null; then
     log "plugin sanity check passed"
   else

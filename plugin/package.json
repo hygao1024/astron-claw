@@ -1,16 +1,17 @@
 {
   "name": "astron-claw",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "AstronClaw channel plugin - connects chat clients via bridge server to OpenClaw.",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "index.ts",
   "files": [
-    "dist/",
+    "index.ts",
+    "src/",
     "openclaw.plugin.json"
   ],
   "openclaw": {
     "extensions": [
-      "./dist/index.js"
+      "./index.ts"
     ],
     "channel": {
       "id": "astron-claw",
@@ -23,5 +24,8 @@
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10"
   }
 }
