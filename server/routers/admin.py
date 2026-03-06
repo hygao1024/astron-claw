@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Cookie
+from fastapi import APIRouter, Cookie, Query
 from fastapi.responses import JSONResponse
 
 from infra.log import logger
@@ -14,16 +14,28 @@ async def _require_admin(admin_session: str | None):
 
 
 @router.get("/api/admin/tokens")
-async def list_tokens(admin_session: str | None = Cookie(default=None)):
+async def list_tokens(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: str = Query(""),
+    sort_by: str = Query("created_at", pattern="^(created_at|bot_online|chat_count)$"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
+    bot_status: str = Query("", pattern="^(|online)$"),
+    admin_session: str | None = Cookie(default=None),
+):
     denied = await _require_admin(admin_session)
     if denied:
         return denied
-    tokens = await state.token_manager.list_all()
+    data = await state.token_manager.list_all(
+        page=1, page_size=10000, search=search
+    )
     connections = await state.bridge.get_connections_summary()
-    result = []
-    for t in tokens:
+
+    # Build full list with connection info
+    all_tokens = []
+    for t in data["items"]:
         conn = connections.get(t["token"], {})
-        result.append({
+        all_tokens.append({
             "token": t["token"],
             "name": t.get("name", ""),
             "created_at": t["created_at"],
@@ -31,7 +43,39 @@ async def list_tokens(admin_session: str | None = Cookie(default=None)):
             "bot_online": conn.get("bot_online", False),
             "chat_count": conn.get("chat_count", 0),
         })
-    return {"tokens": result}
+
+    # Global stats (across ALL tokens, before filtering)
+    global_online = sum(1 for t in all_tokens if t["bot_online"])
+    global_chats = sum(t["chat_count"] for t in all_tokens)
+
+    # Filter by bot status
+    filtered = all_tokens
+    if bot_status == "online":
+        filtered = [t for t in filtered if t["bot_online"]]
+
+    # Sort
+    reverse = sort_order == "desc"
+    if sort_by == "bot_online":
+        filtered.sort(key=lambda t: (t["bot_online"], t["created_at"]), reverse=reverse)
+    elif sort_by == "chat_count":
+        filtered.sort(key=lambda t: (t["chat_count"], t["created_at"]), reverse=reverse)
+    else:
+        filtered.sort(key=lambda t: t["created_at"], reverse=reverse)
+
+    # Paginate
+    total = len(filtered)
+    offset = (page - 1) * page_size
+    page_items = filtered[offset:offset + page_size]
+
+    return {
+        "tokens": page_items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "online_bots": global_online,
+        "active_chats": global_chats,
+        "total_tokens": len(all_tokens),
+    }
 
 
 @router.post("/api/admin/tokens")

@@ -1,7 +1,7 @@
 import secrets
 import time
 
-from sqlalchemy import select, delete, update
+from sqlalchemy import select, delete, update, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from infra.models import Token
@@ -74,22 +74,45 @@ class TokenManager:
             await session.commit()
         logger.info("Token removed: {}...", token[:16])
 
-    async def list_all(self) -> list[dict]:
+    async def list_all(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: str = "",
+    ) -> dict:
         now = time.time()
         async with self._session() as session:
+            base = select(Token).where(Token.expires_at >= now)
+            if search:
+                base = base.where(Token.token.contains(search))
+
+            count_result = await session.execute(
+                select(func.count()).select_from(base.subquery())
+            )
+            total = count_result.scalar() or 0
+
+            offset = (page - 1) * page_size
             result = await session.execute(
-                select(Token).where(Token.expires_at >= now)
+                base.order_by(Token.created_at.desc())
+                .limit(page_size)
+                .offset(offset)
             )
             rows = result.scalars().all()
-        return [
-            {
-                "token": row.token,
-                "created_at": row.created_at,
-                "name": row.name or "",
-                "expires_at": row.expires_at,
-            }
-            for row in rows
-        ]
+
+        return {
+            "items": [
+                {
+                    "token": row.token,
+                    "created_at": row.created_at,
+                    "name": row.name or "",
+                    "expires_at": row.expires_at,
+                }
+                for row in rows
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
 
     async def cleanup_expired(self) -> int:
         async with self._session() as session:

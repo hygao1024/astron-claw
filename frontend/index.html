@@ -2542,6 +2542,18 @@ document.getElementById('server-input').addEventListener('keydown', function(e) 
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') closeLightbox();
 });
+
+// Auto-fill token from URL query parameter (e.g. /?token=sk-xxx from admin)
+(function() {
+  const params = new URLSearchParams(location.search);
+  const urlToken = params.get('token');
+  if (urlToken) {
+    document.getElementById('token-input').value = urlToken;
+    // Clean the URL to avoid leaking token in browser history
+    history.replaceState(null, '', '/');
+    handleConnect();
+  }
+})();
 </script>
 </body>
 </html>

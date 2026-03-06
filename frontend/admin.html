@@ -133,8 +133,10 @@ html, body {
   transition: border-color var(--transition);
 }
 
-.form-group input:focus {
+.form-group input:focus,
+.form-group select:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
 .form-group input::placeholder {
@@ -277,6 +279,16 @@ html, body {
   border-radius: var(--radius);
   padding: 20px;
   box-shadow: var(--shadow);
+  transition: transform var(--transition), box-shadow var(--transition);
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="light"] .stat-card:hover {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
 .stat-card .label {
@@ -347,9 +359,96 @@ html, body {
 
 .toolbar .spacer { flex: 1; }
 
+/* ===== Search Bar ===== */
+.search-bar {
+  position: relative;
+}
+
+.search-bar input {
+  width: 180px;
+  padding: 10px 30px 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font);
+  outline: none;
+  transition: width 0.25s ease, border-color var(--transition), box-shadow var(--transition);
+}
+
+.search-bar input:focus {
+  width: 260px;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+.search-bar input::placeholder {
+  color: var(--text-muted);
+}
+
+.search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  transition: background var(--transition), color var(--transition);
+}
+
+.search-clear.visible { display: flex; }
+.search-clear:hover { background: var(--border); color: var(--text-primary); }
+
 .auto-refresh {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* ===== Sort & Filter ===== */
+thead th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--transition);
+}
+
+thead th.sortable:hover {
+  color: var(--text-secondary);
+}
+
+thead th .sort-arrow {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 10px;
+  opacity: 0.3;
+  transition: opacity var(--transition);
+}
+
+thead th.sorted .sort-arrow {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.btn-secondary.active {
+  color: var(--success);
+  border-color: var(--success);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.btn-secondary.active:hover {
+  color: var(--success);
+  background: rgba(34, 197, 94, 0.15);
 }
 
 /* ===== Table ===== */
@@ -393,6 +492,10 @@ tbody tr:hover {
   background: var(--accent-dim);
 }
 
+tbody tr {
+  transition: background var(--transition);
+}
+
 .token-cell {
   font-family: var(--font-mono);
   font-size: 13px;
@@ -422,6 +525,11 @@ tbody tr:hover {
   color: var(--text-primary);
 }
 
+.copy-btn.copied {
+  color: var(--success);
+  border-color: var(--success);
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -449,6 +557,63 @@ tbody tr:hover {
   background: currentColor;
 }
 
+.badge-online .badge-dot {
+  animation: dotPulse 2s ease-in-out infinite;
+}
+
+/* ===== Chat Link ===== */
+.chat-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid rgba(79, 143, 247, 0.3);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-family: var(--font);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.chat-link:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+/* ===== Skeleton Loading ===== */
+.skeleton {
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  animation: skeleton 1.2s ease-in-out infinite;
+}
+
+.skeleton-row td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.skel-sm { display: inline-block; width: 24px; height: 14px; }
+.skel-md { display: inline-block; width: 70px; height: 14px; }
+.skel-lg { display: inline-block; width: 120px; height: 14px; }
+.skel-badge { display: inline-block; width: 60px; height: 22px; border-radius: 12px; }
+
+/* ===== Relative Time ===== */
+.time-tip {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--border);
+  transition: color var(--transition);
+  user-select: text;
+}
+
+.time-tip:hover {
+  color: var(--text-primary);
+}
+
 .time-cell {
   color: var(--text-secondary);
   font-size: 12px;
@@ -468,6 +633,8 @@ tbody tr:hover {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   z-index: 100;
   align-items: center;
   justify-content: center;
@@ -491,6 +658,16 @@ tbody tr:hover {
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(12px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(1.4); }
+}
+
+@keyframes skeleton {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
 }
 
 .modal h2 {
@@ -523,6 +700,103 @@ tbody tr:hover {
   justify-content: flex-end;
 }
 
+.form-group select {
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: var(--font);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.form-group select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+/* ===== Delete Confirm Modal ===== */
+.delete-modal h2 {
+  color: var(--error);
+}
+
+.delete-modal p {
+  line-height: 1.5;
+}
+
+/* ===== Pagination ===== */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  flex-wrap: wrap;
+}
+
+.pagination button {
+  min-width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.pagination button:hover:not(:disabled):not(.active) {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.pagination button.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.pagination button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pagination .page-info {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 0 8px;
+}
+
+.page-size-select {
+  height: 36px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font);
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.page-size-select:hover { border-color: var(--text-muted); }
+.page-size-select:focus { border-color: var(--accent); }
+
 /* ===== Toast ===== */
 .toast {
   position: fixed;
@@ -550,6 +824,9 @@ tbody tr:hover {
 @media (max-width: 640px) {
   .stats { grid-template-columns: 1fr; }
   .toolbar { flex-wrap: wrap; }
+  .search-bar { order: 10; width: 100%; }
+  .search-bar input { width: 100%; }
+  .search-bar input:focus { width: 100%; }
   table { font-size: 12px; }
   thead th, tbody td { padding: 10px 12px; }
   .auth-card { padding: 28px 20px; }
@@ -635,6 +912,11 @@ tbody tr:hover {
   <div class="toolbar">
     <button class="btn btn-primary" onclick="generateToken()">+ New Token</button>
     <button class="btn btn-secondary" onclick="cleanupExpired()">Cleanup Expired</button>
+    <button class="btn btn-secondary" id="filter-online" onclick="toggleOnlineFilter()">&#9679; Online</button>
+    <div class="search-bar">
+      <input type="text" id="search-input" placeholder="Search tokens..." oninput="handleSearch()">
+      <button class="search-clear" id="search-clear" onclick="clearSearch()">&times;</button>
+    </div>
     <div class="spacer"></div>
     <span class="auto-refresh" id="refresh-label">Auto-refresh: 5s</span>
   </div>
@@ -658,6 +940,7 @@ tbody tr:hover {
         <tr><td colspan="8" class="empty-state">Loading...</td></tr>
       </tbody>
     </table>
+    <div class="pagination" id="pagination"></div>
   </div>
 </div>
 
@@ -672,7 +955,7 @@ tbody tr:hover {
     </div>
     <div class="form-group">
       <label for="token-expiry">Expiration</label>
-      <select id="token-expiry" style="width:100%;padding:12px 14px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:14px;font-family:var(--font);outline:none;">
+      <select id="token-expiry">
         <option value="3600">1 Hour</option>
         <option value="21600">6 Hours</option>
         <option value="86400" selected>1 Day</option>
@@ -713,7 +996,7 @@ tbody tr:hover {
     </div>
     <div class="form-group">
       <label for="edit-token-expiry">New Expiration (from now)</label>
-      <select id="edit-token-expiry" style="width:100%;padding:12px 14px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:14px;font-family:var(--font);outline:none;">
+      <select id="edit-token-expiry">
         <option value="">Keep current</option>
         <option value="3600">1 Hour</option>
         <option value="21600">6 Hours</option>
@@ -733,10 +1016,32 @@ tbody tr:hover {
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Delete Confirm Modal -->
+<div class="modal-overlay" id="delete-modal-overlay" onclick="closeDeleteModal(event)">
+  <div class="modal delete-modal" onclick="event.stopPropagation()">
+    <h2>Delete Token</h2>
+    <p>Are you sure? Connected clients will be disconnected.</p>
+    <input type="hidden" id="delete-token-value">
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="hideDeleteModal()">Cancel</button>
+      <button class="btn btn-danger" id="delete-confirm-btn" onclick="confirmDeleteToken()">Delete</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ===== State =====
 let refreshTimer = null;
 const REFRESH_INTERVAL = 5000;
+const PAGE_SIZE_OPTIONS = [5, 10, 20];
+let pageSize = parseInt(localStorage.getItem('astron-page-size')) || 10;
+let currentPage = 1;
+let searchQuery = '';
+let searchDebounceTimer = null;
+let isFirstLoad = true;
+let sortBy = 'created_at';
+let sortOrder = 'desc';
+let botStatusFilter = '';
 
 // ===== Theme =====
 function toggleTheme() {
@@ -764,6 +1069,8 @@ function showScreen(name) {
 
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (name === 'main') {
+    isFirstLoad = true;
+    showSkeletonLoading();
     fetchTokens();
     refreshTimer = setInterval(fetchTokens, REFRESH_INTERVAL);
   }
@@ -871,12 +1178,77 @@ async function apiFetch(url, options) {
 
 async function fetchTokens() {
   try {
-    const res = await apiFetch('/api/admin/tokens');
+    const params = new URLSearchParams({
+      page: currentPage, page_size: pageSize,
+      sort_by: sortBy, sort_order: sortOrder,
+    });
+    if (searchQuery) params.set('search', searchQuery);
+    if (botStatusFilter) params.set('bot_status', botStatusFilter);
+    const res = await apiFetch('/api/admin/tokens?' + params.toString());
     const data = await res.json();
-    renderTokens(data.tokens || []);
+    renderTokens(data.tokens || [], data.total || 0, data.page || 1, data.page_size || pageSize, data);
+    isFirstLoad = false;
   } catch (e) {
     if (e.message !== 'Unauthorized') console.error('Failed to fetch tokens:', e);
   }
+}
+
+function showSkeletonLoading() {
+  const tbody = document.getElementById('tokens-body');
+  let html = '';
+  for (let i = 0; i < 4; i++) {
+    html += '<tr class="skeleton-row"><td><span class="skeleton skel-sm"></span></td><td><span class="skeleton skel-md"></span></td><td><span class="skeleton skel-lg"></span></td><td><span class="skeleton skel-md"></span></td><td><span class="skeleton skel-md"></span></td><td><span class="skeleton skel-badge"></span></td><td><span class="skeleton skel-sm"></span></td><td><span class="skeleton skel-lg"></span></td></tr>';
+  }
+  tbody.innerHTML = html;
+}
+
+function handleSearch() {
+  const val = document.getElementById('search-input').value;
+  document.getElementById('search-clear').classList.toggle('visible', val.length > 0);
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    searchQuery = val.trim();
+    currentPage = 1;
+    fetchTokens();
+  }, 300);
+}
+
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-clear').classList.remove('visible');
+  searchQuery = '';
+  currentPage = 1;
+  fetchTokens();
+}
+
+function goToPage(page) {
+  currentPage = page;
+  fetchTokens();
+}
+
+function changePageSize(size) {
+  pageSize = size;
+  localStorage.setItem('astron-page-size', size);
+  currentPage = 1;
+  fetchTokens();
+}
+
+function toggleSort(field) {
+  if (sortBy === field) {
+    sortOrder = sortOrder === 'desc' ? 'asc' : 'desc';
+  } else {
+    sortBy = field;
+    sortOrder = 'desc';
+  }
+  currentPage = 1;
+  fetchTokens();
+}
+
+function toggleOnlineFilter() {
+  botStatusFilter = botStatusFilter === 'online' ? '' : 'online';
+  document.getElementById('filter-online').classList.toggle('active', botStatusFilter === 'online');
+  currentPage = 1;
+  fetchTokens();
 }
 
 async function generateToken() {
@@ -963,15 +1335,33 @@ function closeEditModal(e) {
   if (e.target === document.getElementById('edit-modal-overlay')) hideEditModal();
 }
 
-async function deleteToken(token) {
-  if (!confirm('Delete this token? Connected clients will be disconnected.')) return;
+function deleteToken(token) {
+  document.getElementById('delete-token-value').value = token;
+  document.getElementById('delete-modal-overlay').classList.add('active');
+}
+
+async function confirmDeleteToken() {
+  const token = document.getElementById('delete-token-value').value;
+  const btn = document.getElementById('delete-confirm-btn');
+  btn.disabled = true;
   try {
     await apiFetch('/api/admin/tokens/' + encodeURIComponent(token), { method: 'DELETE' });
+    hideDeleteModal();
     showToast('Token deleted');
     fetchTokens();
   } catch (e) {
     if (e.message !== 'Unauthorized') showToast('Failed to delete token');
+  } finally {
+    btn.disabled = false;
   }
+}
+
+function hideDeleteModal() {
+  document.getElementById('delete-modal-overlay').classList.remove('active');
+}
+
+function closeDeleteModal(e) {
+  if (e.target === document.getElementById('delete-modal-overlay')) hideDeleteModal();
 }
 
 async function cleanupExpired() {
@@ -986,40 +1376,110 @@ async function cleanupExpired() {
 }
 
 // ===== Render =====
-function renderTokens(tokens) {
+function renderTokens(tokens, total, page, pSize, apiData) {
   const tbody = document.getElementById('tokens-body');
+  const pagination = document.getElementById('pagination');
   const statTotal = document.getElementById('stat-total');
   const statBots = document.getElementById('stat-bots');
   const statChats = document.getElementById('stat-chats');
 
-  statTotal.textContent = tokens.length;
-  statBots.textContent = tokens.filter(t => t.bot_online).length;
-  statChats.textContent = tokens.reduce((s, t) => s + t.chat_count, 0);
+  // Global stats from API (across ALL tokens, not just current page)
+  statTotal.textContent = apiData && apiData.total_tokens != null ? apiData.total_tokens : total;
+  statBots.textContent = apiData && apiData.online_bots != null ? apiData.online_bots : 0;
+  statChats.textContent = apiData && apiData.active_chats != null ? apiData.active_chats : 0;
+
+  // Render sortable table headers
+  var thead = tbody.closest('table').querySelector('thead tr');
+  if (thead) {
+    function thCls(f) { return 'sortable' + (sortBy === f ? ' sorted' : ''); }
+    function arrow(f) {
+      if (sortBy !== f) return '<span class="sort-arrow">&#9650;</span>';
+      return sortOrder === 'asc' ? '<span class="sort-arrow">&#9650;</span>' : '<span class="sort-arrow">&#9660;</span>';
+    }
+    thead.innerHTML =
+      '<th>#</th><th>Name</th><th>Token</th><th>Created</th><th>Expires</th>' +
+      '<th class="' + thCls('bot_online') + '" onclick="toggleSort(\'bot_online\')">Bot ' + arrow('bot_online') + '</th>' +
+      '<th class="' + thCls('chat_count') + '" onclick="toggleSort(\'chat_count\')">Chats ' + arrow('chat_count') + '</th>' +
+      '<th>Actions</th>';
+  }
 
   if (tokens.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No tokens yet. Click "+ New Token" to create one.</td></tr>';
+    const msg = searchQuery
+      ? 'No tokens matching "' + esc(searchQuery) + '"'
+      : 'No tokens yet. Click "+ New Token" to create one.';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">' + msg + '</td></tr>';
+    pagination.innerHTML = '';
     return;
   }
 
+  const offset = (page - 1) * pSize;
   tbody.innerHTML = tokens.map((t, i) => {
     const masked = t.token.slice(0, 7) + '...' + t.token.slice(-4);
     const created = formatTime(t.created_at);
-    const expires = t.expires_at >= 9999999999 ? 'Never' : formatTime(t.expires_at);
+    const expiresFull = t.expires_at >= 9999999999 ? 'Never' : formatTime(t.expires_at);
+    const expiresRel = t.expires_at >= 9999999999 ? 'Never' : formatRelativeTime(t.expires_at);
     const botBadge = t.bot_online
       ? '<span class="badge badge-online"><span class="badge-dot"></span>Online</span>'
       : '<span class="badge badge-offline"><span class="badge-dot"></span>Offline</span>';
+    const chatLink = '<a class="chat-link" href="/?token=' + encodeURIComponent(t.token) + '" target="_blank" title="Open chat">Chat &#8599;</a>';
 
     return `<tr>
-      <td class="time-cell">${i + 1}</td>
+      <td class="time-cell">${offset + i + 1}</td>
       <td class="time-cell">${t.name ? esc(t.name) : '<span style="color:var(--text-muted)">—</span>'}</td>
-      <td><div class="token-cell"><span class="masked">${esc(masked)}</span><button class="copy-btn" onclick="copyToken('${esc(t.token)}')">Copy</button></div></td>
+      <td><div class="token-cell"><span class="masked">${esc(masked)}</span><button class="copy-btn" onclick="copyToken(this,'${esc(t.token)}')">Copy</button></div></td>
       <td class="time-cell">${esc(created)}</td>
-      <td class="time-cell">${esc(expires)}</td>
+      <td class="time-cell"><span class="time-tip" data-full="${esc(expiresFull)}" data-rel="${esc(expiresRel)}" onclick="toggleExpiry(this)">${esc(expiresRel)}</span></td>
       <td>${botBadge}</td>
       <td>${t.chat_count}</td>
-      <td style="white-space:nowrap"><button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;margin-right:4px" onclick="editToken('${esc(t.token)}','${esc(t.name || '')}')">Edit</button><button class="btn btn-danger" style="padding:6px 12px;font-size:12px" onclick="deleteToken('${esc(t.token)}')">Delete</button></td>
+      <td style="white-space:nowrap">${chatLink}<button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;margin:0 4px" onclick="editToken('${esc(t.token)}','${esc(t.name || '')}')">Edit</button><button class="btn btn-danger" style="padding:6px 12px;font-size:12px" onclick="deleteToken('${esc(t.token)}')">Delete</button></td>
     </tr>`;
   }).join('');
+
+  // Pagination
+  const totalPages = Math.ceil(total / pSize);
+  let html = '';
+
+  // Page size selector
+  html += '<span class="page-info">Per page</span>';
+  html += '<select class="page-size-select" onchange="changePageSize(+this.value)">';
+  for (const opt of PAGE_SIZE_OPTIONS) {
+    html += '<option value="' + opt + '"' + (opt === pSize ? ' selected' : '') + '>' + opt + '</option>';
+  }
+  html += '</select>';
+
+  const start = offset + 1;
+  const end = Math.min(offset + pSize, total);
+  html += '<span class="page-info" style="margin:0 4px">|</span>';
+  html += '<span class="page-info">' + start + '–' + end + ' of ' + total + '</span>';
+
+  if (totalPages > 1) {
+    html += '<span class="page-info" style="margin:0 4px">|</span>';
+    html += '<button ' + (page <= 1 ? 'disabled' : 'onclick="goToPage(' + (page - 1) + ')"') + '>&laquo;</button>';
+    const range = buildPageRange(page, totalPages);
+    for (const p of range) {
+      if (p === '...') {
+        html += '<span class="page-info">...</span>';
+      } else {
+        html += '<button class="' + (p === page ? 'active' : '') + '" onclick="goToPage(' + p + ')">' + p + '</button>';
+      }
+    }
+    html += '<button ' + (page >= totalPages ? 'disabled' : 'onclick="goToPage(' + (page + 1) + ')"') + '>&raquo;</button>';
+  }
+
+  pagination.innerHTML = html;
+}
+
+function buildPageRange(current, total) {
+  if (total <= 7) return Array.from({length: total}, (_, i) => i + 1);
+  const pages = [];
+  pages.push(1);
+  if (current > 3) pages.push('...');
+  for (let i = Math.max(2, current - 1); i <= Math.min(total - 1, current + 1); i++) {
+    pages.push(i);
+  }
+  if (current < total - 2) pages.push('...');
+  pages.push(total);
+  return pages;
 }
 
 // ===== Helpers =====
@@ -1027,6 +1487,21 @@ function formatTime(ts) {
   const d = new Date(ts * 1000);
   const pad = n => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function formatRelativeTime(ts) {
+  const now = Date.now() / 1000;
+  const diff = ts - now;
+  if (diff <= 0) return 'Expired';
+  if (diff < 60) return 'in ' + Math.floor(diff) + 's';
+  if (diff < 3600) return 'in ' + Math.floor(diff / 60) + 'm';
+  if (diff < 86400) {
+    const h = Math.floor(diff / 3600);
+    const m = Math.floor((diff % 3600) / 60);
+    return 'in ' + h + 'h ' + m + 'm';
+  }
+  const d = Math.floor(diff / 86400);
+  return 'in ' + d + 'd';
 }
 
 function esc(s) {
@@ -1051,8 +1526,41 @@ function clipCopy(text) {
   }
 }
 
-function copyToken(token) {
-  clipCopy(token);
+function toggleExpiry(el) {
+  const current = el.textContent;
+  const full = el.dataset.full;
+  const rel = el.dataset.rel;
+  el.textContent = current === rel ? full : rel;
+}
+
+function copyToken(btn, token) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(token).then(() => {
+      showCopyFeedback(btn);
+      showToast('Token copied');
+    });
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = token;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showCopyFeedback(btn);
+    showToast('Token copied');
+  }
+}
+
+function showCopyFeedback(btn) {
+  const orig = btn.textContent;
+  btn.textContent = '✓';
+  btn.classList.add('copied');
+  setTimeout(() => {
+    btn.textContent = orig;
+    btn.classList.remove('copied');
+  }, 1200);
 }
 
 // ===== Modal =====
@@ -1081,6 +1589,20 @@ function showToast(msg) {
   el.classList.add('show');
   setTimeout(() => el.classList.remove('show'), 2500);
 }
+
+// ===== Keyboard: Escape to close modals =====
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    const overlays = ['delete-modal-overlay', 'edit-modal-overlay', 'create-modal-overlay', 'modal-overlay'];
+    for (const id of overlays) {
+      const el = document.getElementById(id);
+      if (el && el.classList.contains('active')) {
+        el.classList.remove('active');
+        break;
+      }
+    }
+  }
+});
 
 // ===== Init =====
 checkAuthStatus();
