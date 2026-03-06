@@ -209,6 +209,10 @@ async def chat_sse(
     # Ensure this session is the active one (so bot responses route here)
     await state.bridge.switch_session(token, session_id)
 
+    # Clear stale events from previous request in this session's inbox
+    redis = get_redis()
+    await redis.delete(f"{_CHAT_INBOX_PREFIX}{token}:{session_id}")
+
     # Send message to bot via Redis inbox
     req_id = await state.bridge.send_to_bot(
         token, content,
