@@ -16,7 +16,7 @@ from services.admin_auth import AdminAuth
 from services.media_manager import MediaManager
 import services.state as state
 
-from routers import health, tokens, admin_auth, admin, media, websocket
+from routers import health, tokens, admin_auth, admin, media, sse, websocket
 
 
 @asynccontextmanager
@@ -62,6 +62,7 @@ app.include_router(tokens.router)
 app.include_router(admin_auth.router)
 app.include_router(admin.router)
 app.include_router(media.router)
+app.include_router(sse.router)
 app.include_router(websocket.router)
 
 # ── Static assets (CSS, JS, etc.) ────────────────────────────────────────────

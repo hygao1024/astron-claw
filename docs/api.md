@@ -2,11 +2,13 @@
 
 ## 概述
 
-Astron Claw 是一个 AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端和 Chat 端分别通过 WebSocket 连接到服务器，服务器根据 Token 将双方配对并双向转发消息。
+Astron Claw 是一个 AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端通过 WebSocket 连接，Chat 端可通过 WebSocket 或 HTTP SSE 两种方式接入，服务器根据 Token 将双方配对并双向转发消息。
 
 ```
 Chat Client ──WebSocket──► Bridge Server ◄──WebSocket── Bot Plugin
               /bridge/chat   (Token 配对)     /bridge/bot
+Chat Client ──HTTP SSE───►
+              /bridge/chat
 ```
 
 - 每个 Token 对应 **1 个 Bot** 连接和 **N 个 Chat** 连接
@@ -28,6 +30,7 @@ http://127.0.0.1:8765
 | Admin 接口 (`/api/admin/*`) | Cookie `admin_session`（登录后自动携带） |
 | 媒体上传 (`POST /api/media/upload`) | `Authorization: Bearer <token>`（仅 Header） |
 | 媒体下载 (`GET /api/media/download/*`) | `Authorization: Bearer <token>` 或 Query 参数 `token` |
+| HTTP SSE (`/bridge/chat`, `/bridge/chat/sessions`) | `Authorization: Bearer <token>` |
 | WebSocket `/bridge/bot` | Query 参数 `token` 或请求头 `X-Astron-Bot-Token` |
 | WebSocket `/bridge/chat` | Query 参数 `token` |
 
@@ -56,6 +59,13 @@ http://127.0.0.1:8765
   - [4.4 会话管理](#44-会话管理)
   - [4.5 交互时序](#45-交互时序)
   - [4.6 接入示例](#46-接入示例)
+- [4A. HTTP SSE — Chat 客户端](#4a-http-sse--chat-客户端)
+  - [4A.1 对话（SSE 流式响应）](#4a1-对话sse-流式响应)
+  - [4A.2 获取会话列表](#4a2-获取会话列表)
+  - [4A.3 创建新会话](#4a3-创建新会话)
+  - [4A.4 SSE 事件类型](#4a4-sse-事件类型)
+  - [4A.5 交互时序](#4a5-交互时序)
+  - [4A.6 接入示例](#4a6-接入示例)
 - [5. WebSocket — Bot 插件](#5-websocket--bot-插件)
   - [5.1 连接](#51-连接)
   - [5.2 接收用户请求](#52-接收用户请求)
@@ -782,15 +792,12 @@ Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
 
 #### `done` — 本轮回复结束
 
-收到此消息表示 Bot 对当前提问的回复已完成。`done` 事件有两种来源：
-
-1. Bot 发送 `session/update` Notification（`sessionUpdate: "agent_message_final"`）— 此时 `content` 携带最终完整文本
-2. Bot 发送 JSON-RPC Response（`result.stopReason: "end_turn"`）— 此时无 `content` 字段
+收到此消息表示 Bot 对当前提问的回复已完成。`done` 事件来源于 Bot 发送的 `session/update` Notification（`sessionUpdate: "agent_message_final"`），`content` 携带最终完整文本。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `type` | string | `"done"` |
-| `content` | string | 最终完整回复文本（可选，可为空） |
+| `content` | string | 最终完整回复文本 |
 
 ```json
 {"type": "done", "content": "完整的回复文本"}
@@ -961,7 +968,9 @@ Client                          Server                          Bot
   │◄── {"type":"tool_call"} ──────┤◄── session/update ───────────┤
   │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
   │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
-  │◄── {"type":"done"} ───────────┤◄── JSON-RPC response ────────┤
+  │◄── {"type":"done"} ───────────┤◄── agent_message_final ──────┤
+  │                               │◄── JSON-RPC response ────────┤
+  │                               │   (request cleanup only)     │
   │                               │                              │
   ├── {"type":"new_session"} ────►│                              │
   │◄── new_session_ack ───────────┤                              │
@@ -1175,6 +1184,348 @@ echo '{"type":"message","content":"你好"}' | \
 
 ---
 
+## 4A. HTTP SSE — Chat 客户端
+
+Chat 端除 WebSocket 外，还可以通过 HTTP SSE（Server-Sent Events）接入。适用于不便维护长连接的场景（如 HTTP API 调用、移动端、Serverless 环境等）。每次对话发起一个 POST 请求，服务端以 SSE 流式返回 Bot 的回复事件。
+
+### 认证方式
+
+所有 SSE 端点统一使用 `Authorization` Header 认证：
+
+```
+Authorization: Bearer sk-xxx
+```
+
+---
+
+### 4A.1 对话（SSE 流式响应）
+
+发送消息给 Bot 并以 SSE 流式接收回复。
+
+```
+POST /bridge/chat
+```
+
+**请求头：**
+
+| 头部 | 值 | 说明 |
+|------|------|------|
+| `Content-Type` | `application/json` | 必填 |
+| `Authorization` | `Bearer sk-xxx` | 必填 |
+
+**请求体（JSON）：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `content` | string | 是 | 消息文本（文本类型时不能为空） |
+| `sessionId` | string | 否 | 会话 ID。不传则自动恢复活跃会话或创建新会话 |
+| `msgType` | string | 否 | 消息类型，默认 `"text"`。支持 `"image"` / `"file"` / `"audio"` / `"video"` |
+| `media` | object | 条件 | 媒体信息（`msgType` 非 text 时必填） |
+
+**请求示例：**
+
+```json
+{"content": "你好，请帮我写一段代码"}
+```
+
+```json
+{"content": "", "sessionId": "550e8400-...", "msgType": "image", "media": {"mediaId": "abc123", "fileName": "photo.jpg", "mimeType": "image/jpeg", "fileSize": 102400}}
+```
+
+**响应：** `Content-Type: text/event-stream`
+
+成功时返回 SSE 事件流（详见 [4A.4 SSE 事件类型](#4a4-sse-事件类型)）。
+
+**错误响应（JSON）：**
+
+| 状态码 | 说明 |
+|--------|------|
+| `400` | 空消息、缺少媒体信息、Bot 未连接 |
+| `401` | Token 无效或缺失 |
+| `404` | 指定的 sessionId 不存在 |
+| `500` | 发送到 Bot 失败 |
+
+```json
+{"ok": false, "error": "Empty message"}
+{"ok": false, "error": "No bot connected"}
+{"ok": false, "error": "Invalid or missing token"}
+```
+
+---
+
+### 4A.2 获取会话列表
+
+```
+GET /bridge/chat/sessions
+```
+
+**认证：** `Authorization: Bearer sk-xxx`
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ok` | boolean | `true` |
+| `sessions` | array | 会话列表 `[{id, number}, ...]` |
+| `activeSessionId` | string | 当前活跃会话 ID |
+
+**响应示例：**
+
+```json
+{
+  "ok": true,
+  "sessions": [
+    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
+    {"id": "660e8400-e29b-41d4-a716-446655440001", "number": 2}
+  ],
+  "activeSessionId": "660e8400-e29b-41d4-a716-446655440001"
+}
+```
+
+---
+
+### 4A.3 创建新会话
+
+```
+POST /bridge/chat/sessions
+```
+
+**请求体：** 无
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ok` | boolean | `true` |
+| `sessionId` | string | 新建会话 ID |
+| `sessionNumber` | integer | 新建会话编号 |
+| `sessions` | array | 更新后的所有会话列表 |
+| `activeSessionId` | string | 活跃会话 ID |
+
+**响应示例：**
+
+```json
+{
+  "ok": true,
+  "sessionId": "770e8400-e29b-41d4-a716-446655440002",
+  "sessionNumber": 3,
+  "sessions": [
+    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
+    {"id": "660e8400-e29b-41d4-a716-446655440001", "number": 2},
+    {"id": "770e8400-e29b-41d4-a716-446655440002", "number": 3}
+  ],
+  "activeSessionId": "770e8400-e29b-41d4-a716-446655440002"
+}
+```
+
+---
+
+### 4A.4 SSE 事件类型
+
+SSE 流中的每个事件格式为：
+
+```
+event: <event_type>
+data: <json_data>
+
+```
+
+| 事件类型 | 说明 | data 字段 |
+|---------|------|----------|
+| `session` | 首个事件，包含会话信息 | `sessionId`, `sessionNumber` |
+| `chunk` | Bot 回复文本片段（流式） | `content` |
+| `thinking` | Bot 思考过程（流式） | `content` |
+| `tool_call` | Bot 调用工具 | `name`, `input` |
+| `tool_result` | 工具执行结果 | `name`, `status`, `content` |
+| `message` | Bot 发送的媒体消息 | `msgType`, `content`, `media` |
+| `done` | 本轮回复结束（**终止事件**） | `content` |
+| `error` | 错误（**终止事件**） | `content` |
+| `: heartbeat` | 心跳注释（15s 间隔），保持连接 | — |
+
+> 收到 `done` 或 `error` 事件后，SSE 流自动关闭。流超时时间为 5 分钟。
+
+**事件示例：**
+
+```
+event: session
+data: {"sessionId":"550e8400-...","sessionNumber":1}
+
+event: thinking
+data: {"content":"让我分析一下..."}
+
+event: chunk
+data: {"content":"这是一段"}
+
+event: chunk
+data: {"content":"回复文本"}
+
+event: done
+data: {"content":"这是一段回复文本"}
+
+```
+
+---
+
+### 4A.5 交互时序
+
+```
+Client                          Server                          Bot
+  │                               │                              │
+  ├── POST /bridge/chat ─────────►│                              │
+  │   {content, sessionId?}       │── JSON-RPC request ─────────►│
+  │                               │                              │
+  │◄── event: session ────────────┤                              │
+  │◄── event: thinking ───────────┤◄── session/update ───────────┤
+  │◄── event: chunk ──────────────┤◄── session/update ───────────┤
+  │◄── event: chunk ──────────────┤◄── session/update ───────────┤
+  │◄── event: done ───────────────┤◄── agent_message_final ──────┤
+  │    (stream closes)            │◄── JSON-RPC response ────────┤
+  │                               │   (request cleanup only)     │
+  │                               │                              │
+```
+
+---
+
+### 4A.6 接入示例
+
+#### JavaScript (fetch + ReadableStream)
+
+```javascript
+async function chat(token, message, sessionId) {
+  const resp = await fetch('/bridge/chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ content: message, sessionId }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json();
+    console.error('Error:', err.error);
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let replyText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    let eventType = 'message';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        eventType = line.slice(7);
+      } else if (line.startsWith('data: ')) {
+        const data = JSON.parse(line.slice(6));
+
+        switch (eventType) {
+          case 'session':
+            console.log(`Session #${data.sessionNumber}`);
+            break;
+          case 'chunk':
+            replyText += data.content;
+            process.stdout.write(data.content);
+            break;
+          case 'thinking':
+            // 可选：展示思考过程
+            break;
+          case 'done':
+            console.log('\n--- Reply complete ---');
+            break;
+          case 'error':
+            console.error('Error:', data.content);
+            break;
+        }
+        eventType = 'message';
+      }
+    }
+  }
+
+  return replyText;
+}
+```
+
+#### Python (requests + SSE 解析)
+
+```python
+import json
+import requests
+
+
+def chat_sse(token: str, message: str, session_id: str = None):
+    """Send a message and stream the SSE response."""
+    resp = requests.post(
+        "http://127.0.0.1:8765/bridge/chat",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"content": message, "sessionId": session_id},
+        stream=True,
+    )
+
+    if resp.status_code != 200:
+        print(f"Error: {resp.json()}")
+        return
+
+    reply_text = ""
+    event_type = "message"
+
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        if line.startswith("event: "):
+            event_type = line[7:]
+        elif line.startswith("data: "):
+            data = json.loads(line[6:])
+
+            if event_type == "session":
+                print(f"Session #{data['sessionNumber']}")
+            elif event_type == "chunk":
+                reply_text += data["content"]
+                print(data["content"], end="", flush=True)
+            elif event_type == "done":
+                print("\n--- Reply complete ---")
+            elif event_type == "error":
+                print(f"\nError: {data['content']}")
+
+            event_type = "message"
+
+    return reply_text
+
+
+# 使用
+token = "sk-your-token-here"
+chat_sse(token, "你好，介绍一下你自己")
+```
+
+#### curl
+
+```bash
+# 对话（SSE 流式响应）
+curl -N -X POST http://127.0.0.1:8765/bridge/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-xxx" \
+  -d '{"content": "你好"}'
+
+# 获取会话列表
+curl http://127.0.0.1:8765/bridge/chat/sessions \
+  -H "Authorization: Bearer sk-xxx"
+
+# 创建新会话
+curl -X POST http://127.0.0.1:8765/bridge/chat/sessions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-xxx"
+```
+
+---
+
 ## 5. WebSocket — Bot 插件
 
 Bot 端通过此 WebSocket 接收来自 Chat 客户端的请求，处理后返回流式结果。
@@ -1377,6 +1728,8 @@ Bot 通过 JSON-RPC Notification（无 `id` 字段）发送流式更新：
 ```
 
 > `id` 必须与收到的请求 `id` 一致。
+>
+> **注意：** JSON-RPC Response 仅用于请求跟踪清理，不会产生 `done` 事件。Chat 端收到的 `done` 事件来自 `agent_message_final` Notification（见 [5.3](#53-发送流式更新)）。Bot 端应在发送完所有流式更新后，先发送 `agent_message_final`，再发送此 JSON-RPC Response。
 
 ---
 

@@ -128,7 +128,11 @@ class TestHandleBotMessage:
         assert payload["content"] == "hello"
 
     async def test_routes_result_to_pending_request_session(self, bridge, mock_redis):
-        """JSON-RPC result is routed to the session that made the request."""
+        """JSON-RPC result cleans up pending request but does NOT push a done event.
+
+        The done event is already sent by agent_message_final notification,
+        so the result only needs to clean up _pending_requests.
+        """
         bridge._pending_requests["req_123"] = ("tok-1", "session-xyz")
 
         msg = {
@@ -137,11 +141,7 @@ class TestHandleBotMessage:
             "result": {"stopReason": "end_turn"},
         }
         await bridge.handle_bot_message("tok-1", json.dumps(msg))
-        mock_redis.rpush.assert_awaited_once()
-        inbox_key = mock_redis.rpush.call_args[0][0]
-        assert inbox_key == "bridge:chat_inbox:tok-1:session-xyz"
-        payload = json.loads(mock_redis.rpush.call_args[0][1])
-        assert payload["type"] == "done"
+        mock_redis.rpush.assert_not_awaited()
         # Pending request should be cleaned up
         assert "req_123" not in bridge._pending_requests
 
@@ -163,8 +163,7 @@ class TestHandleBotMessage:
         assert payload["content"] == "Bot failed"
 
     async def test_remote_session_gets_inbox_push(self, bridge, mock_redis):
-        """When target session is not local, event is pushed to its inbox."""
-        # No local chat registered for session-remote
+        """JSON-RPC result only cleans up pending request, no inbox push."""
         bridge._pending_requests["req_789"] = ("tok-1", "session-remote")
 
         msg = {
@@ -173,9 +172,8 @@ class TestHandleBotMessage:
             "result": {"stopReason": "end_turn"},
         }
         await bridge.handle_bot_message("tok-1", json.dumps(msg))
-        mock_redis.rpush.assert_awaited_once()
-        inbox_key = mock_redis.rpush.call_args[0][0]
-        assert inbox_key == "bridge:chat_inbox:tok-1:session-remote"
+        mock_redis.rpush.assert_not_awaited()
+        assert "req_789" not in bridge._pending_requests
 
 
 class TestGetConnectionsSummary:

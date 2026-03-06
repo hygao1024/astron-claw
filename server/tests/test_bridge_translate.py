@@ -1,8 +1,8 @@
-"""Tests for bridge.py pure functions: _translate_bot_event, _translate_bot_result."""
+"""Tests for bridge.py pure functions: _translate_bot_event."""
 
 import json
 
-from services.bridge import _translate_bot_event, _translate_bot_result
+from services.bridge import _translate_bot_event
 
 
 # ── _translate_bot_event ─────────────────────────────────────────────────────
@@ -107,20 +107,4 @@ class TestTranslateBotEventFallback:
 
     def test_unknown_method(self):
         result = _translate_bot_event("other/method", {"foo": "bar"})
-        assert result is None
-
-
-# ── _translate_bot_result ────────────────────────────────────────────────────
-
-class TestTranslateBotResult:
-    def test_stop_reason(self):
-        result = _translate_bot_result({"stopReason": "end_turn"})
-        assert result == {"type": "done"}
-
-    def test_empty_stop_reason(self):
-        result = _translate_bot_result({"stopReason": ""})
-        assert result is None
-
-    def test_missing_stop_reason(self):
-        result = _translate_bot_result({})
         assert result is None
