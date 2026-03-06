@@ -432,12 +432,8 @@ class ConnectionBridge:
 
         if "id" in msg and "result" in msg:
             info = self._pending_requests.pop(msg["id"], None)
-            done_event = _translate_bot_result(msg["result"])
             session_id = info[1] if info else await self.get_active_session(token)
             logger.info("Bot result: req={} session={} (token={}...)", msg["id"], session_id[:8] if session_id else "?", token[:10])
-            if done_event:
-                if session_id:
-                    await self._send_to_session(token, session_id, done_event)
 
         if "id" in msg and "error" in msg:
             info = self._pending_requests.pop(msg["id"], None)
@@ -637,10 +633,3 @@ def _translate_bot_event(method: str, params: dict) -> Optional[dict]:
 
     return None
 
-
-def _translate_bot_result(result: dict) -> Optional[dict]:
-    """Convert a JSON-RPC result (prompt completion) to a chat event."""
-    stop_reason = result.get("stopReason", "")
-    if stop_reason:
-        return {"type": "done"}
-    return None
