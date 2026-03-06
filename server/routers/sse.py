@@ -28,33 +28,21 @@ class ChatRequest(BaseModel):
     sessionId: Optional[str] = None
     msgType: str = "text"
     media: Optional[dict] = None
-    token: Optional[str] = None
-
-
-class CreateSessionRequest(BaseModel):
-    token: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
 # Auth helper
 # ---------------------------------------------------------------------------
 
-async def _authenticate(
-    authorization: Optional[str],
-    body_token: Optional[str],
-) -> Optional[str]:
-    """Extract and validate token from Authorization header or request body.
+async def _authenticate(authorization: Optional[str]) -> Optional[str]:
+    """Extract and validate token from Authorization: Bearer header.
 
     Returns the validated token string, or None if invalid.
     """
-    token = None
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
 
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-
-    if not token and body_token:
-        token = body_token.strip()
-
+    token = authorization[7:].strip()
     if not token:
         return None
 
@@ -179,7 +167,7 @@ async def chat_sse(
     authorization: Optional[str] = Header(default=None),
 ):
     # Authenticate
-    token = await _authenticate(authorization, body.token)
+    token = await _authenticate(authorization)
     if not token:
         return JSONResponse(
             status_code=401,
@@ -256,9 +244,8 @@ async def chat_sse(
 @router.get("/bridge/chat/sessions")
 async def list_sessions(
     authorization: Optional[str] = Header(default=None),
-    token: Optional[str] = None,
 ):
-    validated = await _authenticate(authorization, token)
+    validated = await _authenticate(authorization)
     if not validated:
         return JSONResponse(
             status_code=401,
@@ -280,10 +267,9 @@ async def list_sessions(
 
 @router.post("/bridge/chat/sessions")
 async def create_session(
-    body: CreateSessionRequest = CreateSessionRequest(),
     authorization: Optional[str] = Header(default=None),
 ):
-    validated = await _authenticate(authorization, body.token)
+    validated = await _authenticate(authorization)
     if not validated:
         return JSONResponse(
             status_code=401,
