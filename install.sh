@@ -250,10 +250,9 @@ mkdir -p "$TARGET_DIR"
 cp -r "$PLUGIN_SRC/"* "$TARGET_DIR/"
 
 # ---------------------------------------------------------------------------
-# Install npm dependencies (only in local mode — tarball already includes
-# node_modules)
+# Install npm dependencies (always install if node_modules is missing)
 # ---------------------------------------------------------------------------
-if [ "$USE_LOCAL" = "1" ] && [ ! -d "$TARGET_DIR/node_modules" ]; then
+if [ ! -d "$TARGET_DIR/node_modules" ]; then
   NPM_BIN="${NPM_BIN:-npm}"
   require_cmd "$NPM_BIN" "Install Node.js + npm then retry: https://nodejs.org"
   log "installing npm dependencies"

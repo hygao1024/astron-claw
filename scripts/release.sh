@@ -9,7 +9,6 @@ set -euo pipefail
 #   plugin/
 #     index.ts
 #     src/
-#     node_modules/
 #     package.json
 #     tsconfig.json
 #     openclaw.plugin.json
@@ -46,11 +45,6 @@ if [ ! -d "$PLUGIN_DIR/src" ]; then
   exit 1
 fi
 
-if [ ! -d "$PLUGIN_DIR/node_modules" ]; then
-  log_error "plugin/node_modules not found — run 'npm install' in plugin/ first"
-  exit 1
-fi
-
 if [ ! -f "$PLUGIN_DIR/openclaw.plugin.json" ]; then
   log_error "plugin/openclaw.plugin.json not found"
   exit 1
@@ -65,7 +59,6 @@ tar -czf "$OUTPUT" \
   -C "$REPO_ROOT" \
   plugin/index.ts \
   plugin/src \
-  plugin/node_modules \
   plugin/package.json \
   plugin/tsconfig.json \
   plugin/openclaw.plugin.json
