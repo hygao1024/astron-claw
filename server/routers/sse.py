@@ -9,13 +9,13 @@ from pydantic import BaseModel
 
 from infra.log import logger
 import services.state as state
+from services.bridge import CHAT_INBOX_PREFIX
 
 router = APIRouter()
 
 _SSE_TIMEOUT = 300  # 5 minutes
 _SSE_BLOCK_MS = 1000  # XREADGROUP block timeout — short so we can send heartbeats
 _HEARTBEAT_INTERVAL = 15.0  # seconds between SSE heartbeat comments
-_CHAT_INBOX_PREFIX = "bridge:chat_inbox:"
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ async def _stream_response(
 ):
     """Consume events from Redis Stream inbox and yield SSE events."""
     queue = state.queue
-    inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
+    inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
     deadline = time.time() + _SSE_TIMEOUT
     last_heartbeat = time.time()
 
@@ -218,7 +218,7 @@ async def chat_sse(
 
     # Clear stale events and reset consumer group for this SSE request
     queue = state.queue
-    inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
+    inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
     await queue.purge(inbox)
     await queue.ensure_group(inbox, "sse")
 

@@ -13,9 +13,7 @@
 
 | 脚本 | 用途 | 运行方式 |
 |---|---|---|
-| `test_integration.py` | 全流程集成测试：Token API、WS 鉴权、消息流转、流式响应、媒体上传/下载、重复 bot 防护 | `python3 test_integration.py` |
-| `test_streaming.py` | 模拟 bot 发送多个 chunk，验证 chat 端逐条实时接收（非合并） | `python3 test_streaming.py` |
-| `test_e2e_streaming.py` | 使用真实 plugin token 连接，验证端到端流式响应 | `python3 test_e2e_streaming.py` |
+| `test_integration.py` | 全流程集成测试：Token API、Bot WS 鉴权、重复 bot 防护、媒体上传/下载、SSE Chat 消息流转 | `python3 test_integration.py` |
 
 ## 运行示例
 

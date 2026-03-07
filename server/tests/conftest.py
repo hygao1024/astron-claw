@@ -49,16 +49,19 @@ def mock_redis():
     redis.sadd = AsyncMock(return_value=1)
     redis.srem = AsyncMock(return_value=1)
     redis.smembers = AsyncMock(return_value=set())
-    redis.hincrby = AsyncMock(return_value=1)
+    redis.hget = AsyncMock(return_value=None)
+    redis.hset = AsyncMock(return_value=1)
     redis.hgetall = AsyncMock(return_value={})
     redis.hdel = AsyncMock(return_value=1)
-    redis.rpush = AsyncMock(return_value=1)
-    redis.lrange = AsyncMock(return_value=[])
-    redis.llen = AsyncMock(return_value=0)
     redis.ttl = AsyncMock(return_value=-2)
     redis.expire = AsyncMock(return_value=True)
     redis.ping = AsyncMock(return_value=True)
-    redis.lpop = AsyncMock(return_value=None)
+    # Pipeline mock: returns a chainable object with async execute()
+    def _make_pipeline():
+        pipe = MagicMock()
+        pipe.execute = AsyncMock(return_value=[])
+        return pipe
+    redis.pipeline = _make_pipeline
     return redis
 
 

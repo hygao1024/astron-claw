@@ -47,18 +47,6 @@ class TestRegisterBot:
         assert result is False
 
 
-class TestRegisterChat:
-    async def test_register_chat(self, bridge, mock_redis, mock_queue):
-        ws = AsyncMock()
-        await bridge.register_chat("tok-1", ws, "session-abc")
-        assert ws in bridge._chat_sessions
-        assert bridge._chat_sessions[ws] == ("tok-1", "session-abc")
-        assert "chat:tok-1:session-abc" in bridge._poll_tasks
-        mock_queue.ensure_group.assert_awaited_once_with(
-            "bridge:chat_inbox:tok-1:session-abc", "chat"
-        )
-
-
 class TestSendToBot:
     async def test_send_to_bot_text(self, bridge, mock_queue, mock_session_store):
         mock_session_store.get_active_session.return_value = "session-id-1"
@@ -194,23 +182,32 @@ class TestHandleBotMessage:
 
 class TestGetConnectionsSummary:
     async def test_get_connections_summary(self, bridge, mock_redis):
-        # smembers is called twice: first for online_bots, then for workers SET
-        mock_redis.smembers.side_effect = [
-            {"tok-1", "tok-2"},   # _ONLINE_BOTS_KEY
-            {"worker-a"},         # _WORKERS_KEY
-        ]
-        mock_redis.hget.return_value = "some-worker"
-        mock_redis.exists.return_value = 1  # all workers alive
-        # hgetall is called once per alive worker for chat counts
-        mock_redis.hgetall.return_value = {"tok-1": "3", "tok-3": "1"}
+        mock_redis.smembers.return_value = {"tok-1", "tok-2"}
+
+        # Pipeline calls: first pipeline returns owners, second returns exists results
+        call_count = 0
+        def _make_pipeline():
+            nonlocal call_count
+            call_count += 1
+            from unittest.mock import MagicMock, AsyncMock
+            pipe = MagicMock()
+            if call_count == 1:
+                # hget pipeline: returns owner worker_id for each token
+                pipe.execute = AsyncMock(return_value=["worker-a", "worker-a"])
+            else:
+                # exists pipeline: returns 1 (alive) for each unique owner
+                pipe.execute = AsyncMock(return_value=[1])
+            return pipe
+        mock_redis.pipeline = _make_pipeline
 
         summary = await bridge.get_connections_summary()
         assert summary["tok-1"]["bot_online"] is True
-        assert summary["tok-1"]["chat_count"] == 3
         assert summary["tok-2"]["bot_online"] is True
-        assert summary["tok-2"]["chat_count"] == 0
-        assert summary["tok-3"]["bot_online"] is False
-        assert summary["tok-3"]["chat_count"] == 1
+
+    async def test_get_connections_summary_empty(self, bridge, mock_redis):
+        mock_redis.smembers.return_value = set()
+        summary = await bridge.get_connections_summary()
+        assert summary == {}
 
 
 class TestSessionCreateSwitch:
@@ -315,75 +312,3 @@ class TestPollBotInbox:
 
         bridge._bots["tok-1"].send_json.assert_not_awaited()
         mock_queue.ack.assert_not_awaited()
-
-
-class TestPollChatInbox:
-    async def test_forwards_event_to_chat_ws(self, bridge, mock_queue):
-        """_poll_chat_inbox reads one message and sends it to chat WS."""
-        chat_ws = AsyncMock()
-        payload = json.dumps({"type": "chunk", "content": "hello"})
-        mock_queue.consume.side_effect = [
-            ("1-0", payload),
-            asyncio.CancelledError(),
-        ]
-
-        await bridge._poll_chat_inbox("tok-1", "session-1", chat_ws)
-
-        chat_ws.send_text.assert_awaited_once_with(payload)
-        mock_queue.ack.assert_awaited_once_with(
-            "bridge:chat_inbox:tok-1:session-1", "chat", "1-0"
-        )
-
-    async def test_skips_when_inbox_empty(self, bridge, mock_queue):
-        """When inbox is empty, consume returns None and loop continues."""
-        chat_ws = AsyncMock()
-        mock_queue.consume.side_effect = [None, asyncio.CancelledError()]
-
-        await bridge._poll_chat_inbox("tok-1", "session-1", chat_ws)
-
-        chat_ws.send_text.assert_not_awaited()
-        mock_queue.ack.assert_not_awaited()
-
-
-class TestUpdateChatSession:
-    async def test_restarts_consume_task_on_session_change(self, bridge, mock_redis, mock_queue):
-        """Switching session stops old consume task, starts new one, cleans old inbox."""
-        chat_ws = AsyncMock()
-        await bridge.register_chat("tok-1", chat_ws, "session-old")
-        assert "chat:tok-1:session-old" in bridge._poll_tasks
-
-        mock_queue.reset_mock()
-        await bridge.update_chat_session(chat_ws, "session-new")
-
-        # Old consume task stopped, old inbox deleted
-        assert "chat:tok-1:session-old" not in bridge._poll_tasks
-        mock_queue.delete_queue.assert_awaited_once_with("bridge:chat_inbox:tok-1:session-old")
-        # New consumer group ensured and consume task started
-        mock_queue.ensure_group.assert_awaited_once_with(
-            "bridge:chat_inbox:tok-1:session-new", "chat"
-        )
-        assert "chat:tok-1:session-new" in bridge._poll_tasks
-        assert bridge._chat_sessions[chat_ws] == ("tok-1", "session-new")
-
-    async def test_noop_when_same_session(self, bridge, mock_redis, mock_queue):
-        """No change when session_id is the same."""
-        chat_ws = AsyncMock()
-        await bridge.register_chat("tok-1", chat_ws, "session-abc")
-        mock_queue.reset_mock()
-
-        await bridge.update_chat_session(chat_ws, "session-abc")
-        mock_queue.delete_queue.assert_not_awaited()
-
-
-class TestUnregisterChat:
-    async def test_cleans_up_inbox(self, bridge, mock_redis, mock_queue):
-        """Unregistering a chat deletes its inbox and cancels consume task."""
-        chat_ws = AsyncMock()
-        await bridge.register_chat("tok-1", chat_ws, "session-abc")
-        mock_queue.reset_mock()
-
-        await bridge.unregister_chat("tok-1", chat_ws)
-
-        mock_queue.delete_queue.assert_awaited_once_with("bridge:chat_inbox:tok-1:session-abc")
-        assert chat_ws not in bridge._chat_sessions
-        assert "chat:tok-1:session-abc" not in bridge._poll_tasks

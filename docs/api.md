@@ -2,13 +2,11 @@
 
 ## 概述
 
-Astron Claw 是一个 AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端通过 WebSocket 连接，Chat 端可通过 WebSocket 或 HTTP SSE 两种方式接入，服务器根据 Token 将双方配对并双向转发消息。
+Astron Claw 是一个 AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端通过 WebSocket 连接，Chat 端通过 HTTP SSE 接入，服务器根据 Token 将双方配对并双向转发消息。
 
 ```
-Chat Client ──WebSocket──► Bridge Server ◄──WebSocket── Bot Plugin
-              /bridge/chat   (Token 配对)     /bridge/bot
-Chat Client ──HTTP SSE───►
-              /bridge/chat
+Chat Client ──HTTP SSE───► Bridge Server ◄──WebSocket── Bot Plugin
+             /bridge/chat   (Token 配对)     /bridge/bot
 ```
 
 - 每个 Token 对应 **1 个 Bot** 连接和 **N 个 Chat** 连接
@@ -32,7 +30,6 @@ http://127.0.0.1:8765
 | 媒体下载 (`GET /api/media/download/*`) | `Authorization: Bearer <token>` 或 Query 参数 `token` |
 | HTTP SSE (`/bridge/chat`, `/bridge/chat/sessions`) | `Authorization: Bearer <token>` |
 | WebSocket `/bridge/bot` | Query 参数 `token` 或请求头 `X-Astron-Bot-Token` |
-| WebSocket `/bridge/chat` | Query 参数 `token` |
 
 ---
 
@@ -52,20 +49,13 @@ http://127.0.0.1:8765
   - [3.3 更新 Token](#33-更新-token)
   - [3.4 删除 Token](#34-删除-token)
   - [3.5 清理过期 Token](#35-清理过期-token)
-- [4. WebSocket — Chat 客户端](#4-websocket--chat-客户端)
-  - [4.1 连接](#41-连接)
-  - [4.2 客户端发送消息](#42-客户端发送消息)
-  - [4.3 服务端推送消息](#43-服务端推送消息)
-  - [4.4 会话管理](#44-会话管理)
+- [4. HTTP SSE — Chat 客户端](#4-http-sse--chat-客户端)
+  - [4.1 对话（SSE 流式响应）](#41-对话sse-流式响应)
+  - [4.2 获取会话列表](#42-获取会话列表)
+  - [4.3 创建新会话](#43-创建新会话)
+  - [4.4 SSE 事件类型](#44-sse-事件类型)
   - [4.5 交互时序](#45-交互时序)
   - [4.6 接入示例](#46-接入示例)
-- [4A. HTTP SSE — Chat 客户端](#4a-http-sse--chat-客户端)
-  - [4A.1 对话（SSE 流式响应）](#4a1-对话sse-流式响应)
-  - [4A.2 获取会话列表](#4a2-获取会话列表)
-  - [4A.3 创建新会话](#4a3-创建新会话)
-  - [4A.4 SSE 事件类型](#4a4-sse-事件类型)
-  - [4A.5 交互时序](#4a5-交互时序)
-  - [4A.6 接入示例](#4a6-接入示例)
 - [5. WebSocket — Bot 插件](#5-websocket--bot-插件)
   - [5.1 连接](#51-连接)
   - [5.2 接收用户请求](#52-接收用户请求)
@@ -648,545 +638,9 @@ print(f"Removed {resp.json()['removed_tokens']} tokens, {resp.json()['removed_me
 
 ---
 
-## 4. WebSocket — Chat 客户端
+## 4. HTTP SSE — Chat 客户端
 
-Chat 端通过 WebSocket 与 Bot 进行实时对话。服务器根据 Token 将 Chat 与 Bot 配对并双向转发消息。
-
-### 4.1 连接
-
-```
-ws://{host}:{port}/bridge/chat?token={token}
-```
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `token` | string | 是 | 由 Admin 生成的 `sk-` 前缀 Token |
-
-**连接结果：**
-
-| 场景 | 行为 |
-|------|------|
-| Token 有效 | 连接保持，服务端依次推送 `bot_status` 和 `session_info` 消息 |
-| Token 无效/过期 | 服务端关闭连接，close code `4001`，reason `"Invalid or missing token"` |
-| 重连（已有会话） | 自动恢复 Redis 中的活跃会话，而非创建新会话 |
-| 服务重启 | 服务端发送 close code `4000` 或 `1012`，客户端应快速重连 |
-
----
-
-### 4.2 客户端发送消息
-
-客户端通过 WebSocket 发送 JSON 文本帧。
-
-#### 文本消息
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `type` | string | 是 | 固定为 `"message"` |
-| `msgType` | string | 否 | 消息类型，默认 `"text"` |
-| `content` | string | 是 | 用户消息文本，不能为空 |
-
-**示例：**
-
-```json
-{"type": "message", "content": "你好，请帮我写一段代码"}
-```
-
-#### 媒体消息
-
-发送图片、文件等媒体消息前，需先通过 [Media 上传接口](#61-上传媒体文件) 上传文件获取 `mediaId`。
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `type` | string | 是 | 固定为 `"message"` |
-| `msgType` | string | 是 | 媒体类型：`"image"` / `"file"` / `"audio"` / `"video"` |
-| `content` | string | 否 | 附带的文本描述 |
-| `media` | object | 是 | 媒体信息 |
-| `media.mediaId` | string | 是 | 上传后获得的媒体 ID |
-| `media.fileName` | string | 否 | 文件名 |
-| `media.mimeType` | string | 否 | MIME 类型 |
-| `media.fileSize` | integer | 否 | 文件大小（字节） |
-
-**示例：**
-
-```json
-{
-  "type": "message",
-  "msgType": "image",
-  "content": "",
-  "media": {
-    "mediaId": "abc123",
-    "fileName": "photo.jpg",
-    "mimeType": "image/jpeg",
-    "fileSize": 102400
-  }
-}
-```
-
----
-
-### 4.3 服务端推送消息
-
-服务端通过 WebSocket 向客户端推送以下类型的 JSON 消息：
-
-#### `bot_status` — Bot 在线状态
-
-连接成功后立即推送一次，Bot 上下线时也会推送。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"bot_status"` |
-| `connected` | boolean | Bot 是否在线 |
-
-```json
-{"type": "bot_status", "connected": true}
-```
-
-#### `chunk` — Bot 回复文本片段（流式）
-
-Bot 的回复内容分多个 chunk 推送，客户端需拼接显示。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"chunk"` |
-| `content` | string | 文本片段 |
-
-```json
-{"type": "chunk", "content": "这是一段回复"}
-```
-
-#### `thinking` — Bot 思考过程（流式）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"thinking"` |
-| `content` | string | 思考内容片段 |
-
-```json
-{"type": "thinking", "content": "让我分析一下这个问题..."}
-```
-
-#### `tool_call` — Bot 调用工具
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"tool_call"` |
-| `name` | string | 工具名称 |
-| `input` | string | 工具输入参数（JSON 字符串） |
-
-```json
-{"type": "tool_call", "name": "read", "input": "{\"path\":\"src/main.py\"}"}
-```
-
-#### `tool_result` — 工具执行结果
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"tool_result"` |
-| `name` | string | 工具名称 |
-| `status` | string | 执行状态：`"completed"` 或 `"error"` |
-| `content` | string | 工具执行结果文本 |
-
-```json
-{"type": "tool_result", "name": "read", "status": "completed", "content": "file contents here..."}
-```
-
-#### `done` — 本轮回复结束
-
-收到此消息表示 Bot 对当前提问的回复已完成。`done` 事件来源于 Bot 发送的 `session/update` Notification（`sessionUpdate: "agent_message_final"`），`content` 携带最终完整文本。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"done"` |
-| `content` | string | 最终完整回复文本 |
-
-```json
-{"type": "done", "content": "完整的回复文本"}
-```
-
-#### `error` — 错误
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"error"` |
-| `content` | string | 错误描述 |
-
-```json
-{"type": "error", "content": "No bot connected"}
-```
-
-**可能的错误值：**
-
-| content | 说明 |
-|---------|------|
-| `Empty message` | 发送了空文本消息 |
-| `Missing media info` | 媒体消息缺少 media 对象 |
-| `No bot connected` | 当前 Token 没有 Bot 在线 |
-| `Failed to send to bot` | 发送到 Bot 失败 |
-
-#### `message` — Bot 发送的媒体消息
-
-Bot 发送的带媒体附件的消息（通过 `agent_media` update type 触发）。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"message"` |
-| `msgType` | string | 媒体类型：`"image"` / `"file"` / `"audio"` / `"video"` |
-| `content` | string | 附带文本（可为空） |
-| `media` | object | 媒体信息 |
-| `media.mediaId` | string | 媒体文件 ID |
-| `media.fileName` | string | 文件名 |
-| `media.mimeType` | string | MIME 类型 |
-| `media.fileSize` | integer | 文件大小（字节） |
-| `media.downloadUrl` | string | 下载路径 |
-
-```json
-{
-  "type": "message",
-  "msgType": "image",
-  "content": "",
-  "media": {
-    "mediaId": "abc123",
-    "fileName": "output.png",
-    "mimeType": "image/png",
-    "fileSize": 204800,
-    "downloadUrl": "/api/media/download/abc123"
-  }
-}
-```
-
-#### `session_info` — 会话信息（连接后推送）
-
-连接成功后紧随 `bot_status` 推送，包含初始会话和已有会话列表。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"session_info"` |
-| `sessionId` | string | 当前活跃会话 ID |
-| `sessionNumber` | integer | 当前会话编号 |
-| `sessions` | array | 所有会话列表 `[{id, number}, ...]` |
-| `activeSessionId` | string | 活跃会话 ID |
-
-```json
-{
-  "type": "session_info",
-  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
-  "sessionNumber": 1,
-  "sessions": [{"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1}],
-  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-#### `new_session_ack` — 新建会话确认
-
-客户端发送 `new_session` 后收到的确认消息。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"new_session_ack"` |
-| `sessionId` | string | 新建会话 ID |
-| `sessionNumber` | integer | 新会话编号 |
-| `sessions` | array | 更新后的所有会话列表 |
-| `activeSessionId` | string | 活跃会话 ID（即新建的会话） |
-
-```json
-{
-  "type": "new_session_ack",
-  "sessionId": "660e8400-e29b-41d4-a716-446655440001",
-  "sessionNumber": 2,
-  "sessions": [
-    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
-    {"id": "660e8400-e29b-41d4-a716-446655440001", "number": 2}
-  ],
-  "activeSessionId": "660e8400-e29b-41d4-a716-446655440001"
-}
-```
-
-#### `switch_session_ack` — 切换会话确认
-
-客户端发送 `switch_session` 后收到的确认消息。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `type` | string | `"switch_session_ack"` |
-| `sessionId` | string | 切换到的会话 ID |
-| `sessions` | array | 所有会话列表 |
-| `activeSessionId` | string | 活跃会话 ID |
-
-```json
-{
-  "type": "switch_session_ack",
-  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
-  "sessions": [
-    {"id": "550e8400-e29b-41d4-a716-446655440000", "number": 1},
-    {"id": "660e8400-e29b-41d4-a716-446655440001", "number": 2}
-  ],
-  "activeSessionId": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
----
-
-### 4.4 会话管理
-
-Chat 客户端支持多会话管理。每个 Token 连接后会自动创建第一个会话，之后可以创建新会话或在已有会话之间切换。不同会话的消息通过不同的 `sessionId` 路由到 Bot，Bot 端会自动隔离不同会话的上下文。
-
-#### 新建会话
-
-```json
-{"type": "new_session"}
-```
-
-服务端响应 `new_session_ack`，客户端应清空消息列表并保存当前会话的消息快照。
-
-#### 切换会话
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `type` | string | 是 | 固定为 `"switch_session"` |
-| `sessionId` | string | 是 | 要切换到的会话 ID |
-
-```json
-{"type": "switch_session", "sessionId": "550e8400-e29b-41d4-a716-446655440000"}
-```
-
-服务端响应 `switch_session_ack`（成功）或 `error`（会话不存在）。
-
----
-
-### 4.5 交互时序
-
-```
-Client                          Server                          Bot
-  │                               │                              │
-  ├── WS connect ────────────────►│                              │
-  │◄── bot_status ────────────────┤                              │
-  │◄── session_info ──────────────┤                              │
-  │                               │                              │
-  ├── {"type":"message"} ────────►│── JSON-RPC request ─────────►│
-  │                               │                              │
-  │◄── {"type":"thinking"} ───────┤◄── session/update ───────────┤
-  │◄── {"type":"tool_call"} ──────┤◄── session/update ───────────┤
-  │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
-  │◄── {"type":"chunk"} ──────────┤◄── session/update ───────────┤
-  │◄── {"type":"done"} ───────────┤◄── agent_message_final ──────┤
-  │                               │◄── JSON-RPC response ────────┤
-  │                               │   (request cleanup only)     │
-  │                               │                              │
-  ├── {"type":"new_session"} ────►│                              │
-  │◄── new_session_ack ───────────┤                              │
-  │                               │                              │
-  ├── {"type":"switch_session"} ─►│                              │
-  │◄── switch_session_ack ────────┤                              │
-  │                               │                              │
-```
-
----
-
-### 4.6 接入示例
-
-#### JavaScript
-
-```javascript
-const ws = new WebSocket('ws://127.0.0.1:8765/bridge/chat?token=sk-xxx');
-
-let botOnline = false;
-let assistantText = '';
-let thinkingText = '';
-
-ws.onopen = () => console.log('Connected');
-
-ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
-
-  switch (msg.type) {
-    case 'bot_status':
-      botOnline = msg.connected;
-      console.log('Bot online:', botOnline);
-      break;
-
-    case 'thinking':
-      thinkingText += msg.content;
-      // 可选：展示思考过程
-      break;
-
-    case 'chunk':
-      assistantText += msg.content;
-      process.stdout.write(msg.content);  // 流式输出
-      break;
-
-    case 'tool_call':
-      console.log(`\n[Tool: ${msg.name}] ${msg.input}`);
-      break;
-
-    case 'tool_result':
-      console.log(`\n[Tool Result] ${msg.content}`);
-      break;
-
-    case 'done':
-      console.log('\n--- Reply complete ---');
-      console.log('Full reply:', assistantText);
-      assistantText = '';
-      thinkingText = '';
-      break;
-
-    case 'error':
-      console.error('Error:', msg.content);
-      break;
-  }
-};
-
-ws.onclose = (e) => console.log('Disconnected:', e.code, e.reason);
-
-// 发送消息（需等 ws.onopen 触发后）
-function send(text) {
-  ws.send(JSON.stringify({ type: 'message', content: text }));
-}
-
-// 示例：连接成功后发送
-ws.onopen = () => {
-  console.log('Connected, waiting for bot_status...');
-};
-```
-
-#### Python
-
-```python
-import asyncio
-import json
-import websockets
-
-
-async def chat(token: str, message: str):
-    uri = f"ws://127.0.0.1:8765/bridge/chat?token={token}"
-
-    async with websockets.connect(uri) as ws:
-        # 1. 等待 bot_status
-        raw = await ws.recv()
-        status = json.loads(raw)
-        print(f"Bot online: {status['connected']}")
-
-        if not status["connected"]:
-            print("Bot is offline, cannot send message")
-            return
-
-        # 2. 等待 session_info
-        raw = await ws.recv()
-        session = json.loads(raw)
-        print(f"Session: {session['sessionId'][:8]}... (#{session['sessionNumber']})")
-
-        # 3. 发送消息
-        await ws.send(json.dumps({"type": "message", "content": message}))
-        print(f"Sent: {message}")
-
-        # 4. 接收流式回复
-        reply_text = ""
-        thinking_text = ""
-
-        async for raw in ws:
-            msg = json.loads(raw)
-            msg_type = msg["type"]
-
-            if msg_type == "thinking":
-                thinking_text += msg["content"]
-
-            elif msg_type == "chunk":
-                reply_text += msg["content"]
-                print(msg["content"], end="", flush=True)
-
-            elif msg_type == "tool_call":
-                print(f"\n[Tool: {msg['name']}] {msg['input']}")
-
-            elif msg_type == "tool_result":
-                print(f"\n[Tool Result] {msg['content']}")
-
-            elif msg_type == "done":
-                print("\n--- Reply complete ---")
-                break
-
-            elif msg_type == "error":
-                print(f"\nError: {msg['content']}")
-                break
-
-            elif msg_type == "bot_status":
-                if not msg["connected"]:
-                    print("\nBot went offline")
-                    break
-
-        return reply_text
-
-
-# 运行
-token = "sk-your-token-here"
-asyncio.run(chat(token, "你好，介绍一下你自己"))
-```
-
-#### Python（多轮对话）
-
-```python
-import asyncio
-import json
-import websockets
-
-
-async def multi_turn_chat(token: str):
-    uri = f"ws://127.0.0.1:8765/bridge/chat?token={token}"
-
-    async with websockets.connect(uri) as ws:
-        # 等待 bot_status
-        status = json.loads(await ws.recv())
-        print(f"Bot online: {status['connected']}")
-
-        # 等待 session_info
-        session = json.loads(await ws.recv())
-        print(f"Session #{session['sessionNumber']}\n")
-
-        while True:
-            # 用户输入
-            user_input = input("You: ").strip()
-            if not user_input or user_input.lower() in ("exit", "quit"):
-                break
-
-            # 发送
-            await ws.send(json.dumps({
-                "type": "message",
-                "content": user_input
-            }))
-
-            # 接收回复
-            print("Bot: ", end="", flush=True)
-            async for raw in ws:
-                msg = json.loads(raw)
-
-                if msg["type"] == "chunk":
-                    print(msg["content"], end="", flush=True)
-                elif msg["type"] == "done":
-                    print("\n")
-                    break
-                elif msg["type"] == "error":
-                    print(f"\n[Error] {msg['content']}\n")
-                    break
-                elif msg["type"] == "bot_status" and not msg["connected"]:
-                    print("\n[Bot disconnected]")
-                    return
-
-
-asyncio.run(multi_turn_chat("sk-your-token-here"))
-```
-
-#### curl + websocat
-
-```bash
-# 安装 websocat: https://github.com/nickel-org/websocat
-# 连接并交互
-echo '{"type":"message","content":"你好"}' | \
-  websocat 'ws://127.0.0.1:8765/bridge/chat?token=sk-xxx'
-```
-
----
-
-## 4A. HTTP SSE — Chat 客户端
-
-Chat 端除 WebSocket 外，还可以通过 HTTP SSE（Server-Sent Events）接入。适用于不便维护长连接的场景（如 HTTP API 调用、移动端、Serverless 环境等）。每次对话发起一个 POST 请求，服务端以 SSE 流式返回 Bot 的回复事件。
+Chat 端通过 HTTP SSE（Server-Sent Events）接入。每次对话发起一个 POST 请求，服务端以 SSE 流式返回 Bot 的回复事件。
 
 ### 认证方式
 
@@ -1198,7 +652,7 @@ Authorization: Bearer sk-xxx
 
 ---
 
-### 4A.1 对话（SSE 流式响应）
+### 4.1 对话（SSE 流式响应）
 
 发送消息给 Bot 并以 SSE 流式接收回复。
 
@@ -1253,7 +707,7 @@ POST /bridge/chat
 
 ---
 
-### 4A.2 获取会话列表
+### 4.2 获取会话列表
 
 ```
 GET /bridge/chat/sessions
@@ -1284,7 +738,7 @@ GET /bridge/chat/sessions
 
 ---
 
-### 4A.3 创建新会话
+### 4.3 创建新会话
 
 ```
 POST /bridge/chat/sessions
@@ -1320,7 +774,7 @@ POST /bridge/chat/sessions
 
 ---
 
-### 4A.4 SSE 事件类型
+### 4.4 SSE 事件类型
 
 SSE 流中的每个事件格式为：
 
@@ -1366,7 +820,7 @@ data: {"content":"这是一段回复文本"}
 
 ---
 
-### 4A.5 交互时序
+### 4.5 交互时序
 
 ```
 Client                          Server                          Bot
@@ -1386,7 +840,7 @@ Client                          Server                          Bot
 
 ---
 
-### 4A.6 接入示例
+### 4.6 接入示例
 
 #### JavaScript (fetch + ReadableStream)
 

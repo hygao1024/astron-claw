@@ -8,7 +8,7 @@
 
 ### 目标
 
-新增 **HTTP SSE** 接入方式，内置前端与第三方对接方均使用统一的 HTTP 接口。同时 **完全保留** 现有 WebSocket 接口，向下兼容。
+新增 **HTTP SSE** 接入方式，内置前端与第三方对接方均使用统一的 HTTP 接口。
 
 ### 核心思路
 
@@ -61,7 +61,6 @@ data: {}
 │                      表现层 (Routers)                      │
 │                                                           │
 │  /bridge/chat                                             │
-│  ├─ WebSocket Upgrade → routers/websocket.py（不变）       │
 │  └─ POST              → routers/sse.py（对话，SSE 流响应） │
 │                                                           │
 │  /bridge/chat/sessions                                    │
@@ -277,7 +276,6 @@ Authorization: Bearer sk-xxx
 
 | 方法 | 路径 | 说明 | 响应类型 |
 |------|------|------|----------|
-| WebSocket | `/bridge/chat` | 现有 WS 双向通信（不变） | — |
 | POST | `/bridge/chat` | **对话**（发消息，流式收回复） | SSE stream |
 | GET | `/bridge/chat/sessions` | 列出会话 | JSON |
 | POST | `/bridge/chat/sessions` | 创建新会话 | JSON |
@@ -416,13 +414,6 @@ const sid = await chat("sk-xxx", "Hello");
 // 继续对话（传入 sessionId）
 await chat("sk-xxx", "Tell me more", sid);
 ```
-
-### 7.4 与 WebSocket 并存
-
-- WebSocket 路由 `routers/websocket.py` 完全不变
-- SSE 路由 `routers/sse.py` 注册在同一路径 `/bridge/chat`，FastAPI 根据有无 `Upgrade: websocket` 头自动分发
-- 两者共用 Bridge 服务层和 Redis inbox
-- 内置前端可通过 transport 选项切换 WS / SSE 模式
 
 ## 8. 实现计划
 

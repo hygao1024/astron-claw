@@ -1,23 +1,25 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import uuid
 from typing import TYPE_CHECKING, Optional
 
-from fastapi import WebSocket
 from redis.asyncio import Redis
 
 from infra.log import logger
 
 if TYPE_CHECKING:
+    from fastapi import WebSocket
+
     from services.queue import MessageQueue
     from services.session_store import SessionStore
 
 _ONLINE_BOTS_KEY = "bridge:online_bots"
 _BOT_WORKERS_KEY = "bridge:bot_workers"        # HASH: token -> worker_id
-_CHAT_COUNTS_PREFIX = "bridge:chats:"          # per-worker HASH: token -> count
 _WORKERS_KEY = "bridge:workers"                # SET: known worker IDs
 _BOT_INBOX_PREFIX = "bridge:bot_inbox:"        # STREAM per token: messages TO bot
-_CHAT_INBOX_PREFIX = "bridge:chat_inbox:"      # STREAM per chat: messages TO chat
+CHAT_INBOX_PREFIX = "bridge:chat_inbox:"       # STREAM per chat: messages TO chat (shared with sse.py)
 _WORKER_HEARTBEAT_PREFIX = "bridge:worker:"    # STRING key with TTL per worker
 
 _WORKER_TTL = 30         # heartbeat TTL (seconds)
@@ -28,10 +30,10 @@ _CONSUME_BLOCK_MS = 5000 # XREADGROUP block timeout (milliseconds)
 class ConnectionBridge:
     """Manages the mapping between bot connections and chat clients.
 
-    Each token can have one bot WebSocket and multiple chat WebSockets.
-    Messages flow: chat -> server (JSON-RPC) -> bot -> server -> chat.
+    Each token can have one bot WebSocket.
+    Messages flow: chat (SSE) -> server (JSON-RPC) -> bot -> server -> chat (SSE).
     Session data is persisted in MySQL via SessionStore, with Redis as a
-    write-through cache. WebSocket refs stay in-memory.
+    write-through cache. Bot WebSocket refs stay in-memory.
 
     Multi-worker safe: connection registry lives in Redis, cross-worker
     message routing uses per-token Redis Streams (XADD / XREADGROUP),
@@ -45,16 +47,12 @@ class ConnectionBridge:
     def __init__(
         self,
         redis: Redis,
-        session_store: "SessionStore",
-        queue: "MessageQueue",
+        session_store: SessionStore,
+        queue: MessageQueue,
     ):
         self._worker_id = uuid.uuid4().hex[:12]
         # token -> bot WebSocket (process-local)
         self._bots: dict[str, WebSocket] = {}
-        # token -> set of chat WebSockets (process-local)
-        self._chats: dict[str, set[WebSocket]] = {}
-        # WebSocket -> (token, session_id) for cleanup on unregister
-        self._chat_sessions: dict[WebSocket, tuple[str, str]] = {}
         # request_id -> (token, session_id) for targeted response routing
         self._pending_requests: dict[str, tuple[str, str]] = {}
         # media manager reference
@@ -88,9 +86,6 @@ class ConnectionBridge:
                 )
                 # Re-sync this worker's presence in workers SET
                 await self._redis.sadd(_WORKERS_KEY, self._worker_id)
-                chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
-                if await self._redis.exists(chat_key):
-                    await self._redis.expire(chat_key, _WORKER_TTL)
                 # Re-sync local bot registrations into Redis
                 for token in self._bots:
                     await self._redis.sadd(_ONLINE_BOTS_KEY, token)
@@ -101,7 +96,6 @@ class ConnectionBridge:
                     wid_str = wid if isinstance(wid, str) else wid.decode()
                     if wid_str != self._worker_id and not await self._is_worker_alive(wid_str):
                         await self._redis.srem(_WORKERS_KEY, wid_str)
-                        await self._redis.delete(f"{_CHAT_COUNTS_PREFIX}{wid_str}")
                 # Clean stale bot registrations owned by dead workers
                 bot_tokens = await self._redis.hgetall(_BOT_WORKERS_KEY)
                 for tok, owner in bot_tokens.items():
@@ -191,97 +185,11 @@ class ConnectionBridge:
             inbox = f"{_BOT_INBOX_PREFIX}{token}"
             await self._queue.publish(inbox, json.dumps({"_disconnect": True}))
 
-        # Disconnect local chat clients for this token
-        if token in self._chats:
-            for ws in list(self._chats.get(token, [])):
-                try:
-                    await ws.close(code=4003, reason="Token deleted")
-                except Exception:
-                    pass
-                await self.unregister_chat(token, ws)
-
         # Clean remaining Redis keys
         await self._redis.srem(_ONLINE_BOTS_KEY, token)
         await self._redis.hdel(_BOT_WORKERS_KEY, token)
         await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
-        worker_ids = await self._redis.smembers(_WORKERS_KEY)
-        for wid in worker_ids:
-            await self._redis.hdel(f"{_CHAT_COUNTS_PREFIX}{wid}", token)
         logger.info("Bot sessions fully removed (token={}...)", token[:10])
-
-    # ── Chat registration (multi-worker safe) ─────────────────────────────────
-
-    async def register_chat(self, token: str, ws: WebSocket, session_id: str) -> None:
-        """Register a chat connection and start consuming its inbox."""
-        self._chat_sessions[ws] = (token, session_id)
-        if token not in self._chats:
-            self._chats[token] = set()
-        self._chats[token].add(ws)
-        chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
-        await self._redis.hincrby(chat_key, token, 1)
-        await self._redis.expire(chat_key, _WORKER_TTL)
-        # Ensure consumer group exists and start consuming chat inbox
-        inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
-        await self._queue.ensure_group(inbox, "chat")
-        task_key = f"chat:{token}:{session_id}"
-        self._poll_tasks[task_key] = asyncio.create_task(
-            self._poll_chat_inbox(token, session_id, ws)
-        )
-        logger.info("Chat registered: session={} (token={}...)", session_id[:8], token[:10])
-
-    async def update_chat_session(self, ws: WebSocket, new_session_id: str) -> None:
-        """Update a chat connection's session: stop old consume task, start new one."""
-        info = self._chat_sessions.get(ws)
-        if not info:
-            return
-        token, old_session_id = info
-        if old_session_id == new_session_id:
-            return
-        # Stop old consume task and clean old inbox
-        old_key = f"chat:{token}:{old_session_id}"
-        task = self._poll_tasks.pop(old_key, None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        await self._queue.delete_queue(f"{_CHAT_INBOX_PREFIX}{token}:{old_session_id}")
-        # Update mapping and start new consume task
-        self._chat_sessions[ws] = (token, new_session_id)
-        inbox = f"{_CHAT_INBOX_PREFIX}{token}:{new_session_id}"
-        await self._queue.ensure_group(inbox, "chat")
-        new_key = f"chat:{token}:{new_session_id}"
-        self._poll_tasks[new_key] = asyncio.create_task(
-            self._poll_chat_inbox(token, new_session_id, ws)
-        )
-        logger.info("Chat session updated: {} -> {} (token={}...)", old_session_id[:8], new_session_id[:8], token[:10])
-
-    async def unregister_chat(self, token: str, ws: WebSocket) -> None:
-        """Unregister a chat connection and clean up its inbox."""
-        info = self._chat_sessions.pop(ws, None)
-        if token in self._chats:
-            self._chats[token].discard(ws)
-            if not self._chats[token]:
-                del self._chats[token]
-        chat_key = f"{_CHAT_COUNTS_PREFIX}{self._worker_id}"
-        count = await self._redis.hincrby(chat_key, token, -1)
-        if count <= 0:
-            await self._redis.hdel(chat_key, token)
-        if info:
-            _, session_id = info
-            task_key = f"chat:{token}:{session_id}"
-            task = self._poll_tasks.pop(task_key, None)
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-            await self._queue.delete_queue(f"{_CHAT_INBOX_PREFIX}{token}:{session_id}")
-            logger.info("Chat unregistered: session={} (token={}...)", session_id[:8], token[:10])
-        else:
-            logger.info("Chat unregistered (token={}...)", token[:10])
 
     # ── Queries (read from Redis for cluster-wide view) ───────────────────────
 
@@ -295,31 +203,40 @@ class ConnectionBridge:
         return await self._is_worker_alive(owner)
 
     async def get_connections_summary(self) -> dict[str, dict]:
-        """Return per-token bot online status and chat connection count (cluster-wide)."""
+        """Return per-token bot online status (cluster-wide)."""
         online_bots = await self._redis.smembers(_ONLINE_BOTS_KEY)
-        worker_ids = await self._redis.smembers(_WORKERS_KEY)
+        if not online_bots:
+            return {}
 
-        live_bots: set[str] = set()
-        for token in online_bots:
-            owner = await self._redis.hget(_BOT_WORKERS_KEY, token)
-            if owner and await self._is_worker_alive(owner):
-                live_bots.add(token)
+        tokens = list(online_bots)
 
-        chat_counts: dict[str, int] = {}
-        for wid in worker_ids:
-            if not await self._is_worker_alive(wid):
-                continue
-            counts = await self._redis.hgetall(f"{_CHAT_COUNTS_PREFIX}{wid}")
-            for token, count in counts.items():
-                chat_counts[token] = chat_counts.get(token, 0) + int(count)
-
-        tokens = live_bots | set(chat_counts.keys())
-        summary: dict[str, dict] = {}
+        # Batch: fetch owner worker_id for each token
+        pipe = self._redis.pipeline()
         for t in tokens:
-            summary[t] = {
-                "bot_online": t in live_bots,
-                "chat_count": chat_counts.get(t, 0),
-            }
+            pipe.hget(_BOT_WORKERS_KEY, t)
+        owners = await pipe.execute()
+
+        # Batch: check heartbeat for each unique owner
+        unique_owners = {o for o in owners if o}
+        alive_cache: dict[str, bool] = {}
+        if unique_owners:
+            pipe2 = self._redis.pipeline()
+            owner_list = list(unique_owners)
+            for o in owner_list:
+                o_str = o if isinstance(o, str) else o.decode()
+                pipe2.exists(f"{_WORKER_HEARTBEAT_PREFIX}{o_str}")
+            alive_results = await pipe2.execute()
+            for o, alive in zip(owner_list, alive_results):
+                o_str = o if isinstance(o, str) else o.decode()
+                alive_cache[o_str] = bool(alive)
+
+        summary: dict[str, dict] = {}
+        for t, owner in zip(tokens, owners):
+            if not owner:
+                continue
+            o_str = owner if isinstance(owner, str) else owner.decode()
+            if alive_cache.get(o_str, False):
+                summary[t] = {"bot_online": True}
         return summary
 
     # ── Session management (delegated to SessionStore) ─────────────────────
@@ -481,7 +398,7 @@ class ConnectionBridge:
     async def _send_to_session(self, token: str, session_id: str, event: dict) -> None:
         """Send event to a specific session's chat inbox via Redis Stream."""
         try:
-            inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
+            inbox = f"{CHAT_INBOX_PREFIX}{token}:{session_id}"
             await self._queue.publish(inbox, json.dumps(event))
             logger.debug("Event pushed to session inbox: type={} session={} (token={}...)", event.get("type"), session_id[:8], token[:10])
         except Exception:
@@ -530,29 +447,6 @@ class ConnectionBridge:
                     logger.exception("Bot inbox consume error (token={}...)", token[:10])
                     await asyncio.sleep(1)
 
-    async def _poll_chat_inbox(self, token: str, session_id: str, ws: WebSocket) -> None:
-        """Consume chat_inbox:{token}:{session_id} via XREADGROUP and forward to the chat WS."""
-        inbox = f"{_CHAT_INBOX_PREFIX}{token}:{session_id}"
-        while not self._shutting_down:
-            try:
-                result = await self._queue.consume(
-                    inbox, group="chat", consumer=f"ws_{self._worker_id}",
-                    block_ms=_CONSUME_BLOCK_MS,
-                )
-                if result is None:
-                    await asyncio.sleep(0)
-                    continue
-                msg_id, raw = result
-                await self._queue.ack(inbox, "chat", msg_id)
-                await ws.send_text(raw)
-                logger.debug("Chat inbox delivered: session={} (token={}...)", session_id[:8], token[:10])
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                if not self._shutting_down:
-                    logger.exception("Chat inbox consume error (token={}...)", token[:10])
-                    await asyncio.sleep(1)
-
     # ── Graceful shutdown ─────────────────────────────────────────────────────
 
     async def shutdown(self) -> None:
@@ -575,17 +469,6 @@ class ConnectionBridge:
             await self._queue.delete_queue(f"{_BOT_INBOX_PREFIX}{token}")
         self._bots.clear()
 
-        # Close chat connections and clean Redis
-        for ws, (token, session_id) in list(self._chat_sessions.items()):
-            try:
-                await ws.close(code=4000, reason="Server restarting")
-            except Exception:
-                pass
-            await self._queue.delete_queue(f"{_CHAT_INBOX_PREFIX}{token}:{session_id}")
-        self._chats.clear()
-        self._chat_sessions.clear()
-
-        await self._redis.delete(f"{_CHAT_COUNTS_PREFIX}{self._worker_id}")
         await self._redis.srem(_WORKERS_KEY, self._worker_id)
         self._pending_requests.clear()
 

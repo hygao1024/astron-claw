@@ -4,14 +4,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
 
-AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端和 Chat 端分别通过 WebSocket 连接，根据 Token 配对并双向转发消息，支持流式回复。作为 OpenClaw Channel Plugin 运行，实现完整的消息和媒体双向传输。
+AI Bot 实时对话桥接服务。服务器作为中转枢纽，Bot 端通过 WebSocket 连接，Chat 端通过 HTTP SSE 接入，根据 Token 配对并双向转发消息，支持流式回复。作为 OpenClaw Channel Plugin 运行，实现完整的消息和媒体双向传输。
 
 ```
                          ┌──────────────────────┐
-Chat Client ──WebSocket──▶                      ◀──WebSocket── Bot Plugin (OpenClaw)
+Chat Client ──HTTP SSE───▶                      ◀──WebSocket── Bot Plugin (OpenClaw)
              /bridge/chat │   Bridge Server      │  /bridge/bot
-Chat Client ──HTTP SSE───▶   (FastAPI + Redis)   │
-             /bridge/chat │                      │
+                          │  (FastAPI + Redis)   │
+                          │                      │
                           │  Token 配对 & 路由    │
                           │  Session 管理         │
                           │  媒体中转             │
@@ -26,8 +26,8 @@ Chat Client ──HTTP SSE───▶   (FastAPI + Redis)   │
 ## 特性
 
 - **OpenClaw Channel Plugin** — 原生 ChannelPlugin 接口，支持 message tool 主动发送消息
-- **双通道 Chat 接入** — WebSocket 双向实时通信 + HTTP SSE 单向流式响应，客户端可按需选择传输方式
-- **WebSocket 双向桥接** — Bot 无需公网 IP，主动出站连接即可
+- **HTTP SSE Chat 接入** — 标准 HTTP POST + SSE 流式响应，对接成本最低
+- **WebSocket Bot 桥接** — Bot 无需公网 IP，主动出站连接即可
 - **多会话管理** — 支持创建/切换多个独立对话，前端 Session Drawer 可 pin 固定
 - **媒体消息支持** — 图片、音频、视频、文件的上传/下载和双向传输
 - **Token 管理** — 支持自定义名称、多种过期时间（1h/6h/1d/7d/30d/永不过期）
@@ -68,7 +68,7 @@ astron-claw/
 │   │   ├── media_manager.py  # 媒体文件管理（MySQL + 本地文件系统）
 │   │   └── state.py        # 全局单例 (bridge, managers)
 │   ├── routers/            # HTTP/WebSocket 路由层
-│   │   ├── websocket.py    # /bridge/bot & /bridge/chat (WebSocket)
+│   │   ├── websocket.py    # /bridge/bot (WebSocket)
 │   │   ├── sse.py          # /bridge/chat (HTTP SSE)
 │   │   ├── tokens.py       # /api/token
 │   │   ├── media.py        # /api/media
@@ -88,9 +88,7 @@ astron-claw/
 │       ├── test_bridge.py
 │       └── e2e/            # 黑盒集成测试（需要真实服务器）
 │           ├── README.md
-│           ├── test_integration.py
-│           ├── test_streaming.py
-│           └── test_e2e_streaming.py
+│           └── test_integration.py
 ├── frontend/               # 前端
 │   ├── index.html          # Chat 聊天界面（支持文本+附件）
 │   ├── admin.html          # Admin 管理面板
@@ -297,7 +295,6 @@ python3 server/tests/e2e/test_integration.py
 | `GET` | `/bridge/chat/sessions` | 获取 Chat 会话列表（HTTP） |
 | `POST` | `/bridge/chat/sessions` | 创建 Chat 会话（HTTP） |
 | WebSocket | `/bridge/bot` | Bot 端连接 |
-| WebSocket | `/bridge/chat` | Chat 端连接（WebSocket） |
 
 ## 技术栈
 
@@ -306,7 +303,7 @@ python3 server/tests/e2e/test_integration.py
 - **日志**：Loguru 结构化日志 + 链路追踪
 - **前端**：原生 HTML / CSS / JavaScript（highlight.js 代码高亮）
 - **插件**：TypeScript / WebSocket (ws) / OpenClaw ChannelPlugin SDK
-- **协议**：WebSocket + HTTP SSE + JSON-RPC 2.0
+- **协议**：HTTP SSE + WebSocket (Bot) + JSON-RPC 2.0
 - **部署**：Docker 多阶段构建 / uv 包管理
 
 ## License

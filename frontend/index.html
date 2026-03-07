@@ -1341,13 +1341,6 @@ body.drawer-pinned .session-overlay {
       <label for="server-input">Server URL (optional)</label>
       <input type="text" id="server-input" placeholder="Leave empty for current host">
     </div>
-    <div class="form-group">
-      <label>Transport</label>
-      <div class="transport-toggle">
-        <button type="button" class="transport-btn active" id="transport-ws" onclick="selectTransport('ws')">WebSocket</button>
-        <button type="button" class="transport-btn" id="transport-sse" onclick="selectTransport('sse')">SSE</button>
-      </div>
-    </div>
     <button class="btn btn-primary" id="connect-btn" onclick="handleConnect()">Connect</button>
     <div class="login-status" id="login-status"></div>
   </div>
@@ -1377,8 +1370,8 @@ body.drawer-pinned .session-overlay {
       <span>Astron Claw</span>
     </div>
     <div class="status-indicator">
-      <div class="status-dot" id="ws-status-dot"></div>
-      <span id="ws-status-text">Connected</span>
+      <div class="status-dot" id="conn-status-dot"></div>
+      <span id="conn-status-text">Connected</span>
     </div>
     <div class="header-actions">
       <button class="icon-btn" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">
@@ -1431,17 +1424,12 @@ body.drawer-pinned .session-overlay {
 
 <script>
 // ===== State =====
-let ws = null;
 let token = '';
-let serverUrl = '';
 let httpBaseUrl = '';
-let transportMode = 'ws'; // 'ws' or 'sse'
 let sseAbortController = null; // AbortController for current SSE fetch
 let isStreaming = false;
 let currentAssistantEl = null;
 let currentAssistantText = '';
-let reconnectAttempts = 0;
-let reconnectTimer = null;
 let botConnected = false;
 let pendingFile = null;  // { file: File, previewUrl: string|null }
 
@@ -1480,9 +1468,6 @@ let sessionList = [];        // [{id, number}, ...]
 let sessionMessages = {};    // sessionId -> innerHTML snapshot
 let sessionMeta = {};        // sessionId -> {preview, timestamp}
 let drawerPinned = false;
-
-const MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_BASE_DELAY = 1000;
 
 // ===== Markdown Setup =====
 if (typeof marked !== 'undefined') {
@@ -1562,13 +1547,6 @@ function toggleTheme() {
   }
 })();
 
-// ===== Transport Selection =====
-function selectTransport(mode) {
-  transportMode = mode;
-  document.getElementById('transport-ws').classList.toggle('active', mode === 'ws');
-  document.getElementById('transport-sse').classList.toggle('active', mode === 'sse');
-}
-
 // ===== Connection =====
 function handleConnect() {
   token = document.getElementById('token-input').value.trim();
@@ -1579,178 +1557,19 @@ function handleConnect() {
 
   const serverInput = document.getElementById('server-input').value.trim();
 
-  if (transportMode === 'sse') {
-    // SSE mode: resolve HTTP base URL
-    if (serverInput) {
-      httpBaseUrl = serverInput.replace(/\/+$/, '');
-      if (!httpBaseUrl.startsWith('http://') && !httpBaseUrl.startsWith('https://')) {
-        httpBaseUrl = (location.protocol === 'https:' ? 'https://' : 'http://') + httpBaseUrl;
-      }
-    } else {
-      httpBaseUrl = `${location.protocol}//${location.host}`;
+  // SSE mode: resolve HTTP base URL
+  if (serverInput) {
+    httpBaseUrl = serverInput.replace(/\/+$/, '');
+    if (!httpBaseUrl.startsWith('http://') && !httpBaseUrl.startsWith('https://')) {
+      httpBaseUrl = (location.protocol === 'https:' ? 'https://' : 'http://') + httpBaseUrl;
     }
-    connectSSE();
   } else {
-    // WS mode: resolve WebSocket URL
-    if (serverInput) {
-      serverUrl = serverInput.replace(/\/+$/, '');
-    } else {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      serverUrl = `${proto}//${location.host}`;
-    }
-
-    // Normalize serverUrl to ws/wss
-    if (serverUrl.startsWith('http://')) {
-      serverUrl = 'ws://' + serverUrl.slice(7);
-    } else if (serverUrl.startsWith('https://')) {
-      serverUrl = 'wss://' + serverUrl.slice(8);
-    } else if (!serverUrl.startsWith('ws://') && !serverUrl.startsWith('wss://')) {
-      serverUrl = 'ws://' + serverUrl;
-    }
-
-    connectWebSocket();
+    httpBaseUrl = `${location.protocol}//${location.host}`;
   }
+  connectSSE();
 }
-
-function setupWebSocketHandlers(socket, isReconnect) {
-  socket.onopen = function() {
-    reconnectAttempts = 0;
-    if (isReconnect) {
-      updateConnectionStatus(true);
-      addSystemMessage('Reconnected successfully!');
-      document.getElementById('msg-input').focus();
-    } else {
-      showLoginStatus('Validating token...', 'connecting');
-    }
-  };
-
-  socket.onmessage = function(event) {
-    try {
-      const msg = JSON.parse(event.data);
-      if (!isReconnect && !document.getElementById('login-screen').classList.contains('hidden')) {
-        showLoginStatus('Connected!', 'success');
-        setTimeout(() => {
-          document.getElementById('login-screen').classList.add('hidden');
-          document.getElementById('chat-screen').classList.remove('hidden');
-          updateConnectionStatus(true);
-          restoreDrawerState();
-          document.getElementById('msg-input').focus();
-        }, 300);
-      }
-      handleServerMessage(msg);
-    } catch (e) {
-      console.error('Failed to parse message:', e);
-    }
-  };
-
-  socket.onerror = function() {
-    if (isReconnect || document.getElementById('login-screen').classList.contains('hidden')) {
-      updateConnectionStatus(false);
-    } else {
-      showLoginStatus('Connection failed', 'error');
-      document.getElementById('connect-btn').disabled = false;
-    }
-  };
-
-  socket.onclose = function(event) {
-    const code = event.code;
-
-    // 4001 = auth failure — stop retrying, return to login
-    if (code === 4001) {
-      clearTimeout(reconnectTimer);
-      reconnectAttempts = MAX_RECONNECT_ATTEMPTS;
-      if (document.getElementById('login-screen').classList.contains('hidden')) {
-        addSystemMessage('Authentication failed. Please re-enter your token.', true);
-        disconnect();
-      } else {
-        const reason = event.reason || 'Invalid token';
-        showLoginStatus(reason, 'error');
-        document.getElementById('connect-btn').disabled = false;
-      }
-      return;
-    }
-
-    if (document.getElementById('login-screen').classList.contains('hidden')) {
-      updateConnectionStatus(false);
-      finalizeStream();
-
-      // 4000 (custom) or 1012 (uvicorn Service Restart) — fast reconnect
-      if (code === 4000 || code === 1012) {
-        reconnectAttempts = 0;
-        addSystemMessage('Server restarting. Reconnecting...');
-      } else {
-        addSystemMessage('Connection lost. Attempting to reconnect...');
-      }
-      attemptReconnect();
-    } else {
-      const reason = event.reason || 'Connection closed';
-      showLoginStatus(reason, 'error');
-      document.getElementById('connect-btn').disabled = false;
-    }
-  };
-}
-
-function connectWebSocket() {
-  const connectBtn = document.getElementById('connect-btn');
-  connectBtn.disabled = true;
-  showLoginStatus('<span class="spinner"></span> Connecting...', 'connecting');
-
-  const url = `${serverUrl}/bridge/chat?token=${encodeURIComponent(token)}`;
-
-  try {
-    ws = new WebSocket(url);
-  } catch (e) {
-    showLoginStatus('Invalid server URL', 'error');
-    connectBtn.disabled = false;
-    return;
-  }
-
-  setupWebSocketHandlers(ws, false);
-}
-
-function attemptReconnect() {
-  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    addSystemMessage('Reconnection failed after multiple attempts. Please refresh.', true);
-    return;
-  }
-
-  reconnectAttempts++;
-  const delay = Math.min(RECONNECT_BASE_DELAY * Math.pow(2, reconnectAttempts - 1), 30000);
-
-  clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(() => {
-    addSystemMessage(`Reconnecting (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
-    const url = `${serverUrl}/bridge/chat?token=${encodeURIComponent(token)}`;
-
-    try {
-      ws = new WebSocket(url);
-    } catch {
-      attemptReconnect();
-      return;
-    }
-
-    setupWebSocketHandlers(ws, true);
-  }, delay);
-}
-
-// Re-connect when tab becomes visible again (WS mode only)
-document.addEventListener('visibilitychange', function() {
-  if (document.visibilityState !== 'visible') return;
-  if (transportMode !== 'ws') return;
-  if (document.getElementById('login-screen').classList.contains('hidden')
-      && (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)) {
-    reconnectAttempts = 0;
-    attemptReconnect();
-  }
-});
 
 function disconnect() {
-  clearTimeout(reconnectTimer);
-  reconnectAttempts = MAX_RECONNECT_ATTEMPTS; // Prevent auto-reconnect
-  if (ws) {
-    ws.close();
-    ws = null;
-  }
   if (sseAbortController) {
     sseAbortController.abort();
     sseAbortController = null;
@@ -1774,15 +1593,14 @@ function disconnect() {
   document.getElementById('messages-list').innerHTML = '';
   document.getElementById('connect-btn').disabled = false;
   showLoginStatus('', '');
-  reconnectAttempts = 0;
 
   const banner = document.getElementById('bot-banner');
   banner.classList.add('hidden');
 }
 
 function updateConnectionStatus(connected) {
-  const dot = document.getElementById('ws-status-dot');
-  const text = document.getElementById('ws-status-text');
+  const dot = document.getElementById('conn-status-dot');
+  const text = document.getElementById('conn-status-text');
 
   dot.className = 'status-dot ' + (connected ? 'connected' : 'disconnected');
   text.textContent = connected ? 'Connected' : 'Disconnected';
@@ -2017,15 +1835,6 @@ function handleServerMessage(msg) {
       break;
     case 'message':
       handleMediaMessage(msg);
-      break;
-    case 'session_info':
-      handleSessionInfo(msg);
-      break;
-    case 'new_session_ack':
-      handleNewSessionAck(msg);
-      break;
-    case 'switch_session_ack':
-      handleSwitchSessionAck(msg);
       break;
     default:
       console.log('Unknown message type:', msg.type);
@@ -2359,13 +2168,7 @@ function formatTime(date) {
 
 // ===== Media Helpers =====
 function getHttpBaseUrl() {
-  if (transportMode === 'sse' && httpBaseUrl) return httpBaseUrl;
-  let base = serverUrl;
-  if (base.startsWith('ws://')) base = 'http://' + base.slice(5);
-  else if (base.startsWith('wss://')) base = 'https://' + base.slice(6);
-  // Remove /bridge/chat path suffix if present
-  base = base.replace(/\/bridge\/chat\/?$/, '');
-  return base;
+  return httpBaseUrl;
 }
 
 function getMediaUrl(downloadUrl) {
@@ -2552,44 +2355,7 @@ function sendMessage() {
   const hasFile = !!pendingFile;
 
   if (!text && !hasFile) return;
-
-  if (transportMode === 'sse') {
-    // SSE mode: use HTTP POST
-    if (!httpBaseUrl) return;
-
-    if (hasFile) {
-      const file = pendingFile.file;
-      const caption = text;
-      clearPendingFile();
-      input.value = '';
-      input.style.height = 'auto';
-
-      const msgType = getMsgTypeFromMime(file.type);
-      addUserMediaMessage(msgType, file, caption, null);
-
-      uploadFile(file).then(function(result) {
-        sseSendMessage(caption, msgType, {
-          mediaId: result.mediaId,
-          fileName: result.fileName,
-          mimeType: result.mimeType,
-          fileSize: result.fileSize,
-          downloadUrl: result.downloadUrl,
-        });
-      }).catch(function(err) {
-        addSystemMessage('File upload failed: ' + err.message, true);
-        setInputEnabled(true);
-      });
-    } else {
-      addUserMessage(text);
-      input.value = '';
-      input.style.height = 'auto';
-      sseSendMessage(text);
-    }
-    return;
-  }
-
-  // WS mode (original logic)
-  if ((!text && !hasFile) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!httpBaseUrl) return;
 
   if (hasFile) {
     const file = pendingFile.file;
@@ -2597,39 +2363,27 @@ function sendMessage() {
     clearPendingFile();
     input.value = '';
     input.style.height = 'auto';
-    setInputEnabled(false);
 
-    // Show user message with a sending placeholder
     const msgType = getMsgTypeFromMime(file.type);
     addUserMediaMessage(msgType, file, caption, null);
 
     uploadFile(file).then(function(result) {
-      // Send the media message via WebSocket
-      const wsMsg = {
-        type: 'message',
-        msgType: msgType,
-        content: caption,
-        media: {
-          mediaId: result.mediaId,
-          fileName: result.fileName,
-          mimeType: result.mimeType,
-          fileSize: result.fileSize,
-          downloadUrl: result.downloadUrl,
-        }
-      };
-      ws.send(JSON.stringify(wsMsg));
-      setInputEnabled(true);
+      sseSendMessage(caption, msgType, {
+        mediaId: result.mediaId,
+        fileName: result.fileName,
+        mimeType: result.mimeType,
+        fileSize: result.fileSize,
+        downloadUrl: result.downloadUrl,
+      });
     }).catch(function(err) {
       addSystemMessage('File upload failed: ' + err.message, true);
       setInputEnabled(true);
     });
   } else {
     addUserMessage(text);
-    ws.send(JSON.stringify({ type: 'message', content: text }));
     input.value = '';
     input.style.height = 'auto';
-    setInputEnabled(false);
-    scrollToBottom();
+    sseSendMessage(text);
   }
 }
 
@@ -2677,82 +2431,34 @@ function copyCode(id) {
 }
 
 // ===== Multi-session Handling =====
-function handleSessionInfo(msg) {
-  currentSessionId = msg.sessionId;
-  sessionList = msg.sessions || [];
-  if (!sessionMessages[currentSessionId]) {
-    sessionMessages[currentSessionId] = '';
-    sessionMeta[currentSessionId] = { preview: '', timestamp: Date.now() };
-  }
-  renderSessionPanel();
-}
-
-function handleNewSessionAck(msg) {
-  saveCurrentSessionMessages();
-  currentSessionId = msg.sessionId;
-  sessionList = msg.sessions || [];
-  sessionMessages[currentSessionId] = '';
-  sessionMeta[currentSessionId] = { preview: '', timestamp: Date.now() };
-  document.getElementById('messages-list').innerHTML = '';
-  finalizeStream();
-  pendingToolCalls.clear();
-  toolCallCounters = {};
-  setInputEnabled(true);
-  renderSessionPanel();
-}
-
-function handleSwitchSessionAck(msg) {
-  saveCurrentSessionMessages();
-  currentSessionId = msg.sessionId;
-  sessionList = msg.sessions || [];
-  restoreSessionMessages(currentSessionId);
-  finalizeStream();
-  pendingToolCalls.clear();
-  toolCallCounters = {};
-  setInputEnabled(true);
-  renderSessionPanel();
-}
-
 function newSession() {
-  if (transportMode === 'sse') {
-    sseCreateSession().then(function(data) {
-      if (data) {
-        saveCurrentSessionMessages();
-        currentSessionId = data.sessionId;
-        sessionList = data.sessions || [];
-        sessionMessages[currentSessionId] = '';
-        sessionMeta[currentSessionId] = { preview: '', timestamp: Date.now() };
-        document.getElementById('messages-list').innerHTML = '';
-        finalizeStream();
-        pendingToolCalls.clear();
-        toolCallCounters = {};
-        setInputEnabled(true);
-        renderSessionPanel();
-      }
-    });
-    return;
-  }
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'new_session' }));
-  }
+  sseCreateSession().then(function(data) {
+    if (data) {
+      saveCurrentSessionMessages();
+      currentSessionId = data.sessionId;
+      sessionList = data.sessions || [];
+      sessionMessages[currentSessionId] = '';
+      sessionMeta[currentSessionId] = { preview: '', timestamp: Date.now() };
+      document.getElementById('messages-list').innerHTML = '';
+      finalizeStream();
+      pendingToolCalls.clear();
+      toolCallCounters = {};
+      setInputEnabled(true);
+      renderSessionPanel();
+    }
+  });
 }
 
 function switchSession(id) {
   if (id === currentSessionId) return;
-  if (transportMode === 'sse') {
-    saveCurrentSessionMessages();
-    currentSessionId = id;
-    restoreSessionMessages(id);
-    finalizeStream();
-    pendingToolCalls.clear();
-    toolCallCounters = {};
-    setInputEnabled(true);
-    renderSessionPanel();
-    return;
-  }
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'switch_session', sessionId: id }));
-  }
+  saveCurrentSessionMessages();
+  currentSessionId = id;
+  restoreSessionMessages(id);
+  finalizeStream();
+  pendingToolCalls.clear();
+  toolCallCounters = {};
+  setInputEnabled(true);
+  renderSessionPanel();
 }
 
 function saveCurrentSessionMessages() {

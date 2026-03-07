@@ -18,7 +18,7 @@ async def list_tokens(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: str = Query(""),
-    sort_by: str = Query("created_at", pattern="^(created_at|bot_online|chat_count)$"),
+    sort_by: str = Query("created_at", pattern="^(created_at|bot_online)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     bot_status: str = Query("", pattern="^(|online)$"),
     admin_session: str | None = Cookie(default=None),
@@ -41,12 +41,10 @@ async def list_tokens(
             "created_at": t["created_at"],
             "expires_at": t["expires_at"],
             "bot_online": conn.get("bot_online", False),
-            "chat_count": conn.get("chat_count", 0),
         })
 
     # Global stats (across ALL tokens, before filtering)
     global_online = sum(1 for t in all_tokens if t["bot_online"])
-    global_chats = sum(t["chat_count"] for t in all_tokens)
 
     # Filter by bot status
     filtered = all_tokens
@@ -57,8 +55,6 @@ async def list_tokens(
     reverse = sort_order == "desc"
     if sort_by == "bot_online":
         filtered.sort(key=lambda t: (t["bot_online"], t["created_at"]), reverse=reverse)
-    elif sort_by == "chat_count":
-        filtered.sort(key=lambda t: (t["chat_count"], t["created_at"]), reverse=reverse)
     else:
         filtered.sort(key=lambda t: t["created_at"], reverse=reverse)
 
@@ -73,7 +69,6 @@ async def list_tokens(
         "page": page,
         "page_size": page_size,
         "online_bots": global_online,
-        "active_chats": global_chats,
         "total_tokens": len(all_tokens),
     }
 

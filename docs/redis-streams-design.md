@@ -92,7 +92,7 @@ bot2 连接服务器 C → 只消费 bot_inbox:token2
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ 表现层 (Routers)                                         │
-│  sse.py  /  websocket.py(将弃用)                         │
+│  sse.py  /  websocket.py                                  │
 ├─────────────────────────────────────────────────────────┤
 │ 业务层 (Services)                                        │
 │  ConnectionBridge（连接管理 + 消息路由）                    │
@@ -142,7 +142,7 @@ bot2 连接服务器 C → 只消费 bot_inbox:token2
 #### 核心约束
 
 - **Bot 与 token 严格 1:1**：bot1 只消费 `bot_inbox:token1`，bot2 只消费 `bot_inbox:token2`，完全隔离
-- **WS 将被弃用**：`chat_inbox` 只有 SSE 消费，不存在 WS/SSE 竞争
+- **WS chat 已移除**：`chat_inbox` 只有 SSE 消费，不存在竞争
 
 #### Consumer Group 定位
 
@@ -403,7 +403,7 @@ SSE 请求是短生命周期（最长 5 分钟），设计要点：
 
 1. **清理旧消息**：SSE 请求前 purge + 重建 group（offset=`$`），等效于当前 `redis.delete(inbox)`
 2. **短阻塞时间**：`block_ms=1000`，以便定期发送 heartbeat comment
-3. **WS 将弃用**：chat inbox 无 WS/SSE 竞争问题，单一 consumer group 即可
+3. **单一消费模式**：chat inbox 只有 SSE 消费，单一 consumer group 即可
 
 ### 7.4 Stream 修剪策略
 
