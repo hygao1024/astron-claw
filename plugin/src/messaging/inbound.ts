@@ -3,11 +3,28 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { SILENT_REPLY_TOKEN, isSilentReplyText } from "openclaw/plugin-sdk";
+
 import { PLUGIN_ID } from "../constants.js";
 import { getRuntime, logger, activeSessionCtx, pendingToolCtx, recordChannelRuntimeState } from "../runtime.js";
 import { downloadMediaFromBridge } from "../bridge/media.js";
 import type { BridgeClient } from "../bridge/client.js";
 import type { ResolvedAccount } from "../types.js";
+
+// ---------------------------------------------------------------------------
+// Silent reply token filtering (mirrors SDK internal isSilentReplyPrefixText
+// with relaxed guard — drops the includes("_") check so that the first
+// streaming delta "NO" is also recognised as a prefix of "NO_REPLY").
+// ---------------------------------------------------------------------------
+const HEARTBEAT_TOKEN = "HEARTBEAT_OK";
+const SILENT_TOKENS = [SILENT_REPLY_TOKEN, HEARTBEAT_TOKEN];
+
+function isSilentTokenPrefix(text: string): boolean {
+  const normalized = text.trim().toUpperCase();
+  if (!normalized) return false;
+  if (/[^A-Z_]/.test(normalized)) return false;
+  return SILENT_TOKENS.some(token => token.startsWith(normalized));
+}
 
 // ---------------------------------------------------------------------------
 // Inbound message processing
@@ -230,7 +247,10 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
         }
         // "final" or undefined — send completion
         if (kind === "final" || kind === undefined) {
-          sendFinal(text || lastPartialText);
+          const finalText = text || lastPartialText;
+          if (!isSilentReplyText(finalText, SILENT_REPLY_TOKEN)) {
+            sendFinal(finalText);
+          }
         }
       } catch (sendErr) {
         logger.error(`deliver send error: ${String(sendErr)}`);
@@ -261,6 +281,10 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
             const fullText = payload?.text ?? "";
             if (!fullText) return;
 
+            // Filter silent reply tokens (same pattern as SDK built-in channels)
+            if (isSilentReplyText(fullText, SILENT_REPLY_TOKEN)) return;
+            if (isSilentTokenPrefix(fullText)) return;
+
             // Calculate delta (new text since last send)
             let delta = fullText;
             if (fullText.startsWith(lastPartialText)) {
@@ -277,7 +301,9 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
 
       // Ensure final is sent even if SDK didn't call deliver with "final"
       if (!finalSent && chunkCount > 0) {
-        sendFinal(lastPartialText);
+        if (!isSilentReplyText(lastPartialText, SILENT_REPLY_TOKEN)) {
+          sendFinal(lastPartialText);
+        }
       }
 
       if (queuedFinal) {
