@@ -52,9 +52,19 @@ var excludedPaths = map[string]bool{
 	"/bridge/bot": true,
 }
 
+// Prefixes that handle their own auth (for dynamic path segments).
+var excludedPrefixes = []string{
+	"/bridge/group/",
+}
+
 func isProtected(path string) bool {
 	if excludedPaths[path] {
 		return false
+	}
+	for _, prefix := range excludedPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return false
+		}
 	}
 	for _, prefix := range protectedPrefixes {
 		if strings.HasPrefix(path, prefix) {

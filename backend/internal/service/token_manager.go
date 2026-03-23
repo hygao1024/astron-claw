@@ -251,6 +251,15 @@ func (m *TokenManager) CountAllActive(ctx context.Context) int {
 	return int(count)
 }
 
+// GetName returns the name associated with a token.
+func (m *TokenManager) GetName(ctx context.Context, token string) string {
+	var t model.Token
+	if err := m.db.WithContext(ctx).Select("name").Where("token = ?", token).First(&t).Error; err != nil {
+		return ""
+	}
+	return t.Name
+}
+
 // CleanupExpired removes all expired tokens and returns the count.
 func (m *TokenManager) CleanupExpired(ctx context.Context) (int, error) {
 	result := m.db.WithContext(ctx).Where("expires_at < ?", time.Now().UTC()).Delete(&model.Token{})

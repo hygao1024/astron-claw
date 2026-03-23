@@ -102,3 +102,72 @@ export interface MetricFamily {
   help: string
   samples: MetricSample[]
 }
+
+// ── Group ─────────────────────────────────────
+export interface GroupInfo {
+  group_id: string
+  name: string
+  description: string
+  agent_count?: number
+  created_at: number
+  updated_at: number
+}
+
+export interface GroupAgent {
+  token: string
+  name: string
+  role?: 'leader' | 'member'
+  bot_online: boolean
+  added_at: number
+}
+
+export interface GroupDetail {
+  group: GroupInfo
+  agents: GroupAgent[]
+}
+
+export interface GroupListResponse {
+  code: number
+  groups: GroupInfo[]
+  total: number
+  page: number
+  page_size: number
+}
+
+// ── Group Chat ────────────────────────────────
+export interface GroupChatAgent {
+  token: string
+  name: string
+  role?: 'leader' | 'member'
+}
+
+export interface GroupChatMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: number
+  agent?: GroupChatAgent
+  toolCalls?: ToolCall[]
+  thinking?: string
+  media?: MediaItem[]
+  isDelegation?: boolean
+}
+
+export type AgentStatus = 'idle' | 'streaming' | 'completed'
+
+// Ordered content blocks for chronological rendering
+export type ContentBlock =
+  | { type: 'thinking'; content: string }
+  | { type: 'tool'; tool: ToolCall }
+  | { type: 'text'; content: string }
+  | { type: 'media'; url: string }
+  | { type: 'error'; content: string }
+
+export interface AgentPanel {
+  agent: GroupChatAgent
+  status: AgentStatus
+  collapsed: boolean
+  blocks: ContentBlock[]
+  color: string
+  // Legacy — kept for sortedPanels filter compatibility
+  messages: GroupChatMessage[]
+}

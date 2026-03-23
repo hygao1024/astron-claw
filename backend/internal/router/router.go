@@ -24,6 +24,8 @@ type App struct {
 	Queue     service.MessageQueue
 	Storage   storage.ObjectStorage
 	Config    *config.AppConfig
+	GroupMgr  *service.GroupManager
+	GroupChat *service.GroupChatManager
 }
 
 // SetupRouter configures all routes and middleware.
@@ -67,6 +69,16 @@ func SetupRouter(app *App) *gin.Engine {
 		admin.PATCH("/tokens/:token", app.adminUpdateToken)
 		admin.DELETE("/tokens/:token", app.adminDeleteToken)
 		admin.POST("/cleanup", app.adminCleanup)
+
+		// Groups
+		admin.GET("/groups", app.listGroups)
+		admin.POST("/groups", app.createGroup)
+		admin.GET("/groups/:groupId", app.getGroup)
+		admin.PATCH("/groups/:groupId", app.updateGroup)
+		admin.DELETE("/groups/:groupId", app.deleteGroup)
+		admin.POST("/groups/:groupId/agents", app.addGroupAgent)
+		admin.PATCH("/groups/:groupId/agents/:token", app.updateGroupAgentRole)
+		admin.DELETE("/groups/:groupId/agents/:token", app.removeGroupAgent)
 	}
 
 	// Media
@@ -79,6 +91,7 @@ func SetupRouter(app *App) *gin.Engine {
 
 	// WebSocket
 	r.GET("/bridge/bot", app.wsBot)
+	r.GET("/bridge/group/:groupId", app.wsGroupChat)
 
 	return r
 }

@@ -18,6 +18,11 @@ const router = createRouter({
       name: 'metrics',
       component: () => import('@/views/MetricsView.vue'),
     },
+    {
+      path: '/group/:groupId',
+      name: 'groupChat',
+      component: () => import('@/views/GroupChatView.vue'),
+    },
   ],
 })
 

@@ -1,6 +1,6 @@
 import { PLUGIN_ID, DEFAULT_ACCOUNT_ID } from "./constants.js";
 import { getRuntime, logger, recordChannelRuntimeState, activeBridgeClients } from "./runtime.js";
-import { resolveAstronClawAccountFromCfg } from "./config.js";
+import { resolveAstronClawAccountFromCfg, listAstronClawAccountIds } from "./config.js";
 import { astronClawOnboarding } from "./onboarding.js";
 import { normalizeTarget } from "./messaging/target.js";
 import { sendTextMessage, sendMediaMessage } from "./messaging/outbound.js";
@@ -36,18 +36,11 @@ export const astronClawPlugin = {
   // --- Config (account discovery — required by framework) ---
   config: {
     listAccountIds: (cfg: any) => {
-      const pluginCfg = cfg?.channels?.[PLUGIN_ID]
-        ?? cfg?.plugins?.entries?.[PLUGIN_ID]?.config
-        ?? {};
-      // Return account if bridge URL is configured (token checked by isConfigured)
-      if (pluginCfg.bridge?.url || pluginCfg.bridge?.token) {
-        return [DEFAULT_ACCOUNT_ID];
-      }
-      return [];
+      return listAstronClawAccountIds(cfg);
     },
 
-    resolveAccount: (cfg: any, _accountId: string) => {
-      return resolveAstronClawAccountFromCfg(cfg);
+    resolveAccount: (cfg: any, accountId: string) => {
+      return resolveAstronClawAccountFromCfg(cfg, accountId);
     },
 
     defaultAccountId: (_cfg: any) => DEFAULT_ACCOUNT_ID,

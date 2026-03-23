@@ -219,6 +219,12 @@ func (app *App) adminDeleteToken(c *gin.Context) {
 		log.Error().Err(err).Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Failed to remove bot sessions")
 		// Don't fail the delete - token is already removed
 	}
+	// Cascade: remove agent from all groups
+	if app.GroupMgr != nil {
+		if err := app.GroupMgr.RemoveAgentByToken(c.Request.Context(), tokenValue); err != nil {
+			log.Error().Err(err).Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Failed to remove agent from groups")
+		}
+	}
 	middleware.InvalidateTokenCache(c.Request.Context(), app.RDB, tokenValue)
 	log.Info().Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Admin deleted token")
 	c.JSON(200, gin.H{"code": 0})

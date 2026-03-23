@@ -2,11 +2,16 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { NModal, NButton, NInput, NSelect, NSpace, useMessage } from 'naive-ui'
 import { useAdminStore } from '@/stores/admin'
+import { useGroupAdminStore } from '@/stores/groupAdmin'
 import AppHeader from '@/components/common/AppHeader.vue'
-import type { Token } from '@/types'
+import type { Token, GroupInfo, GroupAgent } from '@/types'
 
 const admin = useAdminStore()
+const groupAdmin = useGroupAdminStore()
 const message = useMessage()
+
+// Tab state
+const activeTab = ref<'tokens' | 'groups'>('tokens')
 
 // Auth form state
 const password = ref('')
@@ -274,6 +279,130 @@ function buildPageRange(current: number, total: number): (number | '...')[] {
 function onCopyBtnClick(e: MouseEvent, token: string) {
   copyToken(token, e.target as HTMLElement)
 }
+
+// ── Groups ──────────────────────────────────────
+const showCreateGroupModal = ref(false)
+const createGroupName = ref('')
+const createGroupDesc = ref('')
+const createGroupLoading = ref(false)
+
+const showGroupDetailModal = ref(false)
+const detailGroup = ref<GroupInfo | null>(null)
+const detailAgents = ref<GroupAgent[]>([])
+const detailLoading = ref(false)
+const addAgentToken = ref('')
+
+const showEditGroupModal = ref(false)
+const editGroupId = ref('')
+const editGroupName = ref('')
+const editGroupDesc = ref('')
+const editGroupLoading = ref(false)
+
+const showDeleteGroupModal = ref(false)
+const deleteGroupId = ref('')
+
+function switchTab(tab: 'tokens' | 'groups') {
+  activeTab.value = tab
+  if (tab === 'groups') {
+    groupAdmin.fetchGroups()
+  }
+}
+
+async function handleCreateGroup() {
+  createGroupLoading.value = true
+  try {
+    await groupAdmin.createGroup(createGroupName.value, createGroupDesc.value)
+    showCreateGroupModal.value = false
+    createGroupName.value = ''
+    createGroupDesc.value = ''
+    message.success('Group created')
+  } catch (e) { message.error((e as Error).message) }
+  finally { createGroupLoading.value = false }
+}
+
+async function openGroupDetail(group: GroupInfo) {
+  detailLoading.value = true
+  showGroupDetailModal.value = true
+  try {
+    const data = await groupAdmin.getGroup(group.group_id)
+    detailGroup.value = data.group
+    detailAgents.value = data.agents
+  } catch (e) { message.error((e as Error).message) }
+  finally { detailLoading.value = false }
+}
+
+async function handleAddAgent() {
+  if (!detailGroup.value || !addAgentToken.value) return
+  try {
+    await groupAdmin.addAgent(detailGroup.value.group_id, addAgentToken.value)
+    addAgentToken.value = ''
+    // Refresh detail
+    const data = await groupAdmin.getGroup(detailGroup.value.group_id)
+    detailAgents.value = data.agents
+    groupAdmin.fetchGroups()
+    message.success('Agent added')
+  } catch (e) { message.error((e as Error).message) }
+}
+
+async function handleRemoveAgent(token: string) {
+  if (!detailGroup.value) return
+  try {
+    await groupAdmin.removeAgent(detailGroup.value.group_id, token)
+    const data = await groupAdmin.getGroup(detailGroup.value.group_id)
+    detailAgents.value = data.agents
+    groupAdmin.fetchGroups()
+    message.success('Agent removed')
+  } catch (e) { message.error((e as Error).message) }
+}
+
+async function handleToggleRole(agent: GroupAgent) {
+  if (!detailGroup.value) return
+  const newRole = agent.role === 'leader' ? 'member' : 'leader'
+  try {
+    await groupAdmin.updateAgentRole(detailGroup.value.group_id, agent.token, newRole)
+    const data = await groupAdmin.getGroup(detailGroup.value.group_id)
+    detailAgents.value = data.agents
+    message.success(`${agent.name || 'Agent'} is now ${newRole}`)
+  } catch (e) { message.error((e as Error).message) }
+}
+
+function openEditGroup(group: GroupInfo) {
+  editGroupId.value = group.group_id
+  editGroupName.value = group.name
+  editGroupDesc.value = group.description
+  showEditGroupModal.value = true
+}
+
+async function handleEditGroup() {
+  editGroupLoading.value = true
+  try {
+    await groupAdmin.updateGroup(editGroupId.value, {
+      name: editGroupName.value,
+      description: editGroupDesc.value,
+    })
+    showEditGroupModal.value = false
+    message.success('Group updated')
+  } catch (e) { message.error((e as Error).message) }
+  finally { editGroupLoading.value = false }
+}
+
+function openDeleteGroup(groupId: string) {
+  deleteGroupId.value = groupId
+  showDeleteGroupModal.value = true
+}
+
+async function confirmDeleteGroup() {
+  try {
+    await groupAdmin.deleteGroup(deleteGroupId.value)
+    showDeleteGroupModal.value = false
+    message.success('Group deleted')
+  } catch (e) { message.error((e as Error).message) }
+}
+
+function copyGroupId(groupId: string) {
+  navigator.clipboard.writeText(groupId)
+  message.success('Group ID copied')
+}
 </script>
 
 <template>
@@ -343,6 +472,14 @@ function onCopyBtnClick(e: MouseEvent, token: string) {
       </div>
     </div>
 
+    <!-- Tab Switcher -->
+    <div class="tab-bar">
+      <button class="tab-btn" :class="{ active: activeTab === 'tokens' }" @click="switchTab('tokens')">Tokens</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'groups' }" @click="switchTab('groups')">Groups</button>
+    </div>
+
+    <!-- ============ Tokens Tab ============ -->
+    <div v-if="activeTab === 'tokens'">
     <!-- Toolbar -->
     <div class="toolbar">
       <button class="btn btn-primary" @click="showCreateModal = true">+ New Token</button>
@@ -543,6 +680,167 @@ function onCopyBtnClick(e: MouseEvent, token: string) {
         </NSpace>
       </template>
     </NModal>
+    </div><!-- end tokens tab -->
+
+    <!-- ============ Groups Tab ============ -->
+    <div v-if="activeTab === 'groups'">
+      <div class="toolbar">
+        <button class="btn btn-primary" @click="showCreateGroupModal = true">+ New Group</button>
+      </div>
+
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Name</th>
+              <th>Group ID</th>
+              <th>Description</th>
+              <th>Agents</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="groupAdmin.loading && groupAdmin.groups.length === 0" v-for="n in 3" :key="'gskel-' + n" class="skeleton-row">
+              <td><span class="skeleton skel-sm"></span></td>
+              <td><span class="skeleton skel-md"></span></td>
+              <td><span class="skeleton skel-lg"></span></td>
+              <td><span class="skeleton skel-md"></span></td>
+              <td><span class="skeleton skel-sm"></span></td>
+              <td><span class="skeleton skel-lg"></span></td>
+            </tr>
+            <tr v-else-if="groupAdmin.groups.length === 0">
+              <td colspan="6" class="empty-state">No groups yet. Click "+ New Group" to create one.</td>
+            </tr>
+            <tr v-else v-for="(g, i) in groupAdmin.groups" :key="g.group_id">
+              <td class="time-cell">{{ i + 1 }}</td>
+              <td>{{ g.name || '—' }}</td>
+              <td>
+                <div class="token-cell">
+                  <span class="masked">{{ g.group_id.slice(0, 8) }}...</span>
+                  <button class="copy-btn" @click="copyGroupId(g.group_id)">Copy</button>
+                </div>
+              </td>
+              <td class="time-cell" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ g.description || '—' }}</td>
+              <td>
+                <span class="badge badge-online" style="background:rgba(79,143,247,.12);color:var(--accent)">{{ g.agent_count ?? 0 }}</span>
+              </td>
+              <td style="white-space:nowrap">
+                <button class="btn btn-secondary btn-sm" @click="openGroupDetail(g)">Detail</button>
+                <button class="btn btn-secondary btn-sm" @click="openEditGroup(g)">Edit</button>
+                <button class="btn btn-danger btn-sm" @click="openDeleteGroup(g.group_id)">Delete</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Create Group Modal -->
+      <NModal v-model:show="showCreateGroupModal" preset="card" title="Create Group" style="max-width: 480px">
+        <div class="form-group">
+          <label>Name</label>
+          <NInput v-model:value="createGroupName" placeholder="e.g. AI Team" />
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <NInput v-model:value="createGroupDesc" type="textarea" placeholder="Group description" :rows="3" />
+        </div>
+        <template #footer>
+          <NSpace justify="end">
+            <NButton @click="showCreateGroupModal = false">Cancel</NButton>
+            <NButton type="primary" :loading="createGroupLoading" @click="handleCreateGroup">Create</NButton>
+          </NSpace>
+        </template>
+      </NModal>
+
+      <!-- Group Detail Modal -->
+      <NModal v-model:show="showGroupDetailModal" preset="card" :title="detailGroup?.name || 'Group Detail'" style="max-width: 600px">
+        <div v-if="detailLoading" style="text-align:center;padding:20px;color:var(--text-muted)">Loading...</div>
+        <template v-else-if="detailGroup">
+          <div style="margin-bottom:16px">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Group ID</div>
+            <div class="token-cell">
+              <code style="font-size:13px">{{ detailGroup.group_id }}</code>
+              <button class="copy-btn" @click="copyGroupId(detailGroup.group_id)">Copy</button>
+            </div>
+          </div>
+          <div v-if="detailGroup.description" style="margin-bottom:16px;font-size:13px;color:var(--text-secondary)">{{ detailGroup.description }}</div>
+
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">Agents ({{ detailAgents.length }})</div>
+
+          <!-- Add agent -->
+          <div style="display:flex;gap:8px;margin-bottom:12px">
+            <NInput v-model:value="addAgentToken" placeholder="Paste token to add" size="small" style="flex:1" />
+            <NButton size="small" type="primary" @click="handleAddAgent" :disabled="!addAgentToken">Add</NButton>
+          </div>
+
+          <div v-if="detailAgents.length === 0" style="text-align:center;padding:20px;color:var(--text-muted);font-size:13px">No agents in this group.</div>
+          <table v-else style="font-size:13px;width:100%">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Token</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="a in detailAgents" :key="a.token">
+                <td>{{ a.name || '—' }}</td>
+                <td><code style="font-size:12px">{{ a.token.slice(0, 10) }}...</code></td>
+                <td>
+                  <button
+                    class="btn btn-sm"
+                    :class="a.role === 'leader' ? 'btn-primary' : 'btn-secondary'"
+                    style="min-width:70px"
+                    @click="handleToggleRole(a)"
+                  >
+                    {{ a.role === 'leader' ? 'Leader' : 'Member' }}
+                  </button>
+                </td>
+                <td>
+                  <span class="badge" :class="a.bot_online ? 'badge-online' : 'badge-offline'" style="font-size:11px">
+                    <span class="badge-dot"></span>
+                    {{ a.bot_online ? 'Online' : 'Offline' }}
+                  </span>
+                </td>
+                <td><button class="btn btn-danger btn-sm" @click="handleRemoveAgent(a.token)">Remove</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </NModal>
+
+      <!-- Edit Group Modal -->
+      <NModal v-model:show="showEditGroupModal" preset="card" title="Edit Group" style="max-width: 480px">
+        <div class="form-group">
+          <label>Name</label>
+          <NInput v-model:value="editGroupName" placeholder="Group name" />
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <NInput v-model:value="editGroupDesc" type="textarea" placeholder="Group description" :rows="3" />
+        </div>
+        <template #footer>
+          <NSpace justify="end">
+            <NButton @click="showEditGroupModal = false">Cancel</NButton>
+            <NButton type="primary" :loading="editGroupLoading" @click="handleEditGroup">Save</NButton>
+          </NSpace>
+        </template>
+      </NModal>
+
+      <!-- Delete Group Confirm Modal -->
+      <NModal v-model:show="showDeleteGroupModal" preset="card" title="Delete Group" style="max-width: 440px">
+        <p style="color:var(--text-secondary);font-size:14px;line-height:1.5">Are you sure? All agents will be removed from this group.</p>
+        <template #footer>
+          <NSpace justify="end">
+            <NButton @click="showDeleteGroupModal = false">Cancel</NButton>
+            <NButton type="error" @click="confirmDeleteGroup">Delete</NButton>
+          </NSpace>
+        </template>
+      </NModal>
+    </div><!-- end groups tab -->
   </div>
 </template>
 
@@ -584,6 +882,16 @@ function onCopyBtnClick(e: MouseEvent, token: string) {
 
 /* ===== Page Layout ===== */
 .page { max-width: 1000px; margin: 0 auto; padding: 24px 20px; }
+
+/* ===== Tab Bar ===== */
+.tab-bar { display: flex; gap: 4px; margin-bottom: 16px; }
+.tab-btn {
+  padding: 8px 20px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-secondary); font-size: 13px; font-weight: 600;
+  font-family: var(--font); cursor: pointer; transition: all var(--transition);
+}
+.tab-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ===== Stats Cards ===== */
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 28px; }

@@ -20,7 +20,7 @@
       },
       "bridge": {
         "type": "object",
-        "description": "Bridge server connection settings",
+        "description": "Bridge server connection settings (single-account mode)",
         "additionalProperties": false,
         "properties": {
           "url": {
@@ -34,6 +34,46 @@
           }
         },
         "required": ["url"]
+      },
+      "accounts": {
+        "type": "object",
+        "description": "Multi-account configuration. Each key is an accountId with its own bridge settings.",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "bridge": {
+              "type": "object",
+              "properties": {
+                "url": { "type": "string" },
+                "token": { "type": "string" }
+              }
+            },
+            "name": { "type": "string" },
+            "enabled": { "type": "boolean" },
+            "allowFrom": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "retry": {
+              "type": "object",
+              "properties": {
+                "baseMs": { "type": "number" },
+                "maxMs": { "type": "number" },
+                "maxAttempts": { "type": "number" }
+              }
+            },
+            "media": {
+              "type": "object",
+              "properties": {
+                "maxSize": { "type": "number" },
+                "allowedTypes": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
       },
       "allowFrom": {
         "type": "array",

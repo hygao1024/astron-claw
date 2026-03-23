@@ -53,6 +53,7 @@ func main() {
 	// Initialize services
 	tokenMgr := service.NewTokenManager(db, rdb)
 	adminAuth := service.NewAdminAuth(db, rdb)
+	groupMgr := service.NewGroupManager(db, rdb, tokenMgr)
 
 	// Initialize object storage
 	store := storage.NewStorage(cfg.Storage)
@@ -75,6 +76,10 @@ func main() {
 	bridge := service.NewConnectionBridge(rdb, sessionStore, queue)
 	bridge.Start()
 
+	// Initialize group chat
+	groupChat := service.NewGroupChatManager(bridge, groupMgr, tokenMgr, queue, rdb)
+	bridge.SetGroupChat(groupChat)
+
 	// Build the app and router
 	app := &router.App{
 		DB:        db,
@@ -86,6 +91,8 @@ func main() {
 		Queue:     queue,
 		Storage:   store,
 		Config:    cfg,
+		GroupMgr:  groupMgr,
+		GroupChat: groupChat,
 	}
 	r := router.SetupRouter(app)
 
@@ -123,6 +130,7 @@ func main() {
 	}
 
 	bridge.Shutdown()
+	groupChat.Shutdown()
 	telemetry.Shutdown()
 
 	if err := store.Close(); err != nil {

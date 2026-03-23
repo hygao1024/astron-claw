@@ -82,6 +82,16 @@ type ConnectionBridge struct {
 	wg           sync.WaitGroup
 	ctx          context.Context
 	cancel       context.CancelFunc
+	groupChat    *GroupChatManager // optional, nil-safe
+	delegationTrackers sync.Map // groupID -> *delegationTracker
+}
+
+type delegationTracker struct {
+	mu               sync.Mutex
+	leaderToken      string
+	delegated        map[string]bool
+	completed        map[string]bool
+	summaryTriggered bool
 }
 
 // NewConnectionBridge creates a new ConnectionBridge.
@@ -481,6 +491,7 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 			}
 			if sessionID != "" {
 				b.sendToSession(ctx, token, sessionID, chatEvent)
+				b.broadcastToGroupIfNeeded(ctx, token, sessionID, chatEvent)
 			}
 		} else {
 			log.Warn().Str("method", method).Str("token", pkg.SafePrefix(token, 10)).
@@ -512,9 +523,11 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 			}
 			log.Error().Str("error", errMsg).Str("token", pkg.SafePrefix(token, 10)).Msg("Bot JSON-RPC error")
 			if sessionID != "" {
-				b.sendToSession(ctx, token, sessionID, map[string]interface{}{
+				errEvent := map[string]interface{}{
 					"type": "error", "content": errMsg,
-				})
+				}
+				b.sendToSession(ctx, token, sessionID, errEvent)
+				b.broadcastToGroupIfNeeded(ctx, token, sessionID, errEvent)
 			}
 		}
 	}
@@ -523,6 +536,67 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 // NotifyBotConnected logs bot connection.
 func (b *ConnectionBridge) NotifyBotConnected(token string) {
 	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Bot status -> connected")
+}
+
+// SetGroupChat sets the GroupChatManager for group broadcast support.
+func (b *ConnectionBridge) SetGroupChat(gc *GroupChatManager) {
+	b.groupChat = gc
+}
+
+func (b *ConnectionBridge) trackDelegation(groupID, leaderToken, targetToken string) {
+	val, _ := b.delegationTrackers.LoadOrStore(groupID, &delegationTracker{
+		leaderToken: leaderToken,
+		delegated:   make(map[string]bool),
+		completed:   make(map[string]bool),
+	})
+	tracker := val.(*delegationTracker)
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.delegated[targetToken] = true
+}
+
+func (b *ConnectionBridge) checkDelegationCompletion(ctx context.Context, groupID, doneToken string) {
+	val, ok := b.delegationTrackers.Load(groupID)
+	if !ok {
+		return
+	}
+	tracker := val.(*delegationTracker)
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+
+	if !tracker.delegated[doneToken] {
+		return
+	}
+	tracker.completed[doneToken] = true
+
+	for token := range tracker.delegated {
+		if !tracker.completed[token] {
+			return
+		}
+	}
+
+	if tracker.summaryTriggered {
+		return
+	}
+	tracker.summaryTriggered = true
+
+	// All delegated agents done
+	if b.groupChat != nil {
+		b.groupChat.BroadcastToGroup(ctx, groupID, map[string]interface{}{
+			"type": "all_done",
+		})
+		go b.triggerBossSummary(ctx, groupID, tracker.leaderToken)
+	}
+}
+
+func (b *ConnectionBridge) triggerBossSummary(ctx context.Context, groupID, leaderToken string) {
+	if b.groupChat == nil {
+		return
+	}
+	time.Sleep(500 * time.Millisecond)
+	if err := b.groupChat.TriggerBossSummary(ctx, groupID, leaderToken); err != nil {
+		log.Error().Err(err).Str("group", groupID).Msg("Failed to trigger boss summary")
+	}
 }
 
 // NotifyBotDisconnected logs bot disconnection.
@@ -548,6 +622,156 @@ func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID s
 				Msg("Failed to send to session inbox")
 		}
 	}
+}
+
+// broadcastToGroupIfNeeded checks if a session belongs to a group and broadcasts the event.
+func (b *ConnectionBridge) broadcastToGroupIfNeeded(ctx context.Context, token, sessionID string, chatEvent map[string]interface{}) {
+	if b.groupChat == nil || sessionID == "" {
+		return
+	}
+	groupID, ok := b.groupChat.LookupGroupForSession(ctx, sessionID)
+	if !ok {
+		return
+	}
+	agentEvent := copyMap(chatEvent)
+	agentEvent["agent"] = map[string]interface{}{
+		"token": token,
+		"name":  b.groupChat.GetAgentName(ctx, token),
+	}
+	b.groupChat.BroadcastToGroup(ctx, groupID, agentEvent)
+
+	// Check for delegation via tool_call
+	eventType, _ := chatEvent["type"].(string)
+	if eventType == "tool_call" {
+		b.maybeHandleDelegation(ctx, groupID, token, chatEvent)
+	}
+
+	if eventType == "done" {
+		b.checkDelegationCompletion(ctx, groupID, token)
+	}
+}
+
+// maybeHandleDelegation intercepts tool_call events from a leader bot to delegate work.
+func (b *ConnectionBridge) maybeHandleDelegation(ctx context.Context, groupID, token string, chatEvent map[string]interface{}) {
+	if b.groupChat == nil {
+		return
+	}
+
+	// Only leaders can delegate
+	if !b.groupChat.groupMgr.IsLeader(ctx, groupID, token) {
+		return
+	}
+
+	toolName, _ := chatEvent["name"].(string)
+	if !isDelegationTool(toolName) {
+		return
+	}
+
+	inputText, _ := chatEvent["input"].(string)
+	if inputText == "" {
+		return
+	}
+
+	targetName, content := parseDelegationArgs(inputText)
+	if targetName == "" || content == "" {
+		log.Debug().Str("tool", toolName).Str("group", groupID).Msg("Delegation: could not parse target/content")
+		return
+	}
+
+	targetToken, err := b.groupChat.ResolveAgentByName(ctx, groupID, targetName)
+	if err != nil {
+		log.Warn().Err(err).Str("target", targetName).Str("group", groupID).Msg("Delegation: target agent not found")
+		return
+	}
+
+	// Broadcast delegation event to group WS
+	leaderName := b.groupChat.GetAgentName(ctx, token)
+	delegationEvent := map[string]interface{}{
+		"type":       "delegation",
+		"from":       map[string]interface{}{"token": token, "name": leaderName},
+		"to":         map[string]interface{}{"token": targetToken, "name": targetName},
+		"content":    content,
+	}
+	b.groupChat.BroadcastToGroup(ctx, groupID, delegationEvent)
+
+	// Delegate asynchronously
+	go func() {
+		if err := b.groupChat.DelegateToAgent(ctx, groupID, targetToken, content); err != nil {
+			log.Error().Err(err).Str("target", targetName).Str("group", groupID).Msg("Delegation failed")
+		}
+	}()
+
+	log.Info().Str("from", leaderName).Str("to", targetName).Str("group", groupID).Msg("Delegation triggered")
+	b.trackDelegation(groupID, token, targetToken)
+}
+
+// isDelegationTool checks if a tool name matches a delegation pattern.
+func isDelegationTool(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "sessions_send") ||
+		strings.Contains(lower, "sessions_spawn") ||
+		strings.Contains(lower, "send_message") ||
+		strings.Contains(lower, "sessions-send")
+}
+
+// parseDelegationArgs parses tool input JSON to extract target agent name and message content.
+// Supports both sessions_send (sessionKey/message) and sessions_spawn (agentId/task) formats.
+func parseDelegationArgs(input string) (targetName, content string) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(input), &args); err != nil {
+		return "", ""
+	}
+
+	// Try direct agent name fields first
+	for _, key := range []string{"agentId", "agent_id", "target", "targetAgent", "target_agent", "to"} {
+		if v, ok := args[key].(string); ok && v != "" {
+			targetName = v
+			break
+		}
+	}
+
+	// If no direct agent name, try to extract from sessionKey
+	// sessionKey format: "agent:<agentId>:<channel>:..." e.g. "agent:ainews:astron-claw:direct:xxx"
+	if targetName == "" {
+		for _, key := range []string{"sessionKey", "sessionId", "session_key"} {
+			if v, ok := args[key].(string); ok && v != "" {
+				targetName = extractAgentFromSessionKey(v)
+				break
+			}
+		}
+	}
+
+	// Try various field names for content
+	for _, key := range []string{"message", "content", "text", "msg", "task"} {
+		if v, ok := args[key].(string); ok && v != "" {
+			content = v
+			break
+		}
+	}
+
+	return targetName, content
+}
+
+// extractAgentFromSessionKey extracts an agent name from a session key like "agent:ainews:...".
+func extractAgentFromSessionKey(key string) string {
+	// Format: "agent:<agentId>:<channel>:..."
+	if !strings.HasPrefix(key, "agent:") {
+		return ""
+	}
+	parts := strings.SplitN(key, ":", 3)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return ""
+}
+
+// copyMap creates a shallow copy of a map.
+func copyMap(m map[string]interface{}) map[string]interface{} {
+	cp := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
 }
 
 func (b *ConnectionBridge) pollBotInbox(ctx context.Context, token string, gen int64) {

@@ -50,6 +50,18 @@ var (
 	ErrWSServerRestart = AppError{4000, "Server restarting"}
 	ErrWSEvicted       = AppError{4005, "Evicted by newer connection"}
 
+	// Group
+	ErrGroupNotFound      = AppError{http.StatusNotFound, "Group not found"}
+	ErrGroupAgentExists   = AppError{http.StatusConflict, "Agent already in group"}
+	ErrGroupAgentNotFound = AppError{http.StatusNotFound, "Agent not in group"}
+	ErrGroupInvalidReq    = AppError{http.StatusBadRequest, "Invalid group request"}
+	ErrGroupNoLeader      = AppError{http.StatusNotFound, "No leader assigned in group"}
+	ErrGroupInvalidRole   = AppError{http.StatusBadRequest, "Invalid role, must be leader or member"}
+
+	// Group WebSocket
+	ErrWSGroupNotFound = AppError{4010, "Group not found"}
+	ErrWSGroupNoAgents = AppError{4011, "No agents in group"}
+
 	// Bot (internal)
 	ErrBotUnknownError = AppError{0, "Unknown error from bot"}
 )
