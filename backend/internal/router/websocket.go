@@ -39,6 +39,20 @@ func (app *App) wsBot(c *gin.Context) {
 		return
 	}
 
+	if app.Bridge.IsDraining() {
+		conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			log.Error().Err(err).Msg("WS upgrade failed for draining worker")
+			return
+		}
+		msg := websocket.FormatCloseMessage(model.ErrWSServerRestart.Code, model.ErrWSServerRestart.Message)
+		_ = conn.WriteMessage(websocket.CloseMessage, msg)
+		conn.Close()
+		tp := pkg.SafePrefix(botToken, 10)
+		log.Info().Str("token", tp).Msg("Bot connection rejected: worker draining")
+		return
+	}
+
 	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Error().Err(err).Msg("WS upgrade failed")

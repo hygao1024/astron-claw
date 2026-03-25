@@ -25,8 +25,16 @@ const (
 )
 
 // GaugeKey returns the Redis key for a worker's gauge data.
-func GaugeKey(pid string) string {
-	return fmt.Sprintf("{otlp}:gauges:%s", pid)
+func GaugeKey(workerID string) string {
+	return fmt.Sprintf("{otlp}:gauges:%s", workerID)
+}
+
+func workerID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	return host + ":" + strconv.Itoa(os.Getpid())
 }
 
 func attrsKey(name string, attrs map[string]string) string {
@@ -47,7 +55,7 @@ func attrSetToMap(set attribute.Set) map[string]string {
 // RedisMetricExporter exports OTel metrics to Redis.
 type RedisMetricExporter struct {
 	rdb         redis.UniversalClient
-	pid         string
+	workerID    string
 	serviceName string
 	gaugeTTL    time.Duration
 }
@@ -56,7 +64,7 @@ type RedisMetricExporter struct {
 func NewRedisMetricExporter(rdb redis.UniversalClient, serviceName string, exportIntervalMs int) *RedisMetricExporter {
 	return &RedisMetricExporter{
 		rdb:         rdb,
-		pid:         strconv.Itoa(os.Getpid()),
+		workerID:    workerID(),
 		serviceName: serviceName,
 		gaugeTTL:    time.Duration(exportIntervalMs*3) * time.Millisecond,
 	}
@@ -145,10 +153,10 @@ func (e *RedisMetricExporter) Export(ctx context.Context, rm *metricdata.Resourc
 
 	// Write gauge data
 	if hasGauge && len(gaugeFields) > 0 {
-		gk := GaugeKey(e.pid)
+		gk := GaugeKey(e.workerID)
 		pipe.HSet(ctx, gk, gaugeFields)
 		pipe.PExpire(ctx, gk, e.gaugeTTL)
-		pipe.SAdd(ctx, KeyGaugePIDs, e.pid)
+		pipe.SAdd(ctx, KeyGaugePIDs, e.workerID)
 	}
 
 	// Write resource info

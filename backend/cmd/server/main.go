@@ -115,6 +115,8 @@ func main() {
 
 	log.Info().Msg("Shutting down server...")
 
+	bridge.BeginDrain()
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

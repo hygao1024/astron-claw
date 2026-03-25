@@ -28,9 +28,9 @@ const (
 	CleanupLockKey     = "bridge:cleanup_lock"
 	BotGenPrefix       = "bridge:bot_gen:"
 
-	BotTTL             = 30 * time.Second
-	HeartbeatInterval  = 10 * time.Second
-	ConsumeBlockMs     = 5000 // keep as int for blockMs parameter
+	BotTTL            = 30 * time.Second
+	HeartbeatInterval = 10 * time.Second
+	ConsumeBlockMs    = 5000 // keep as int for blockMs parameter
 )
 
 // BotConn wraps a websocket.Conn with a write mutex for thread safety.
@@ -59,6 +59,9 @@ func (bc *BotConn) WriteMessage(messageType int, data []byte) error {
 func (bc *BotConn) Close(code int, reason string) error {
 	var err error
 	bc.closed.Do(func() {
+		if bc.Conn == nil {
+			return
+		}
 		bc.mu.Lock()
 		defer bc.mu.Unlock()
 		msg := websocket.FormatCloseMessage(code, reason)
@@ -78,6 +81,7 @@ type ConnectionBridge struct {
 	queue        MessageQueue
 	pollCancels  sync.Map // "bot:{token}" -> context.CancelFunc
 	shuttingDown atomic.Bool
+	draining     atomic.Bool
 	regMu        sync.Mutex
 	wg           sync.WaitGroup
 	ctx          context.Context
@@ -102,6 +106,16 @@ func (b *ConnectionBridge) Start() {
 	b.wg.Add(1)
 	go b.runHeartbeat()
 	log.Info().Str("worker", b.workerID).Msg("Bridge worker started")
+}
+
+// BeginDrain stops accepting new bot connections on this worker.
+func (b *ConnectionBridge) BeginDrain() {
+	b.draining.Store(true)
+}
+
+// IsDraining reports whether the worker is draining connections.
+func (b *ConnectionBridge) IsDraining() bool {
+	return b.draining.Load()
 }
 
 func (b *ConnectionBridge) runHeartbeat() {
@@ -218,6 +232,9 @@ func (b *ConnectionBridge) RegisterBot(ctx context.Context, token string, conn *
 
 	if b.shuttingDown.Load() {
 		return fmt.Errorf("bridge is shutting down")
+	}
+	if b.draining.Load() {
+		return fmt.Errorf("bridge is draining")
 	}
 
 	// Same-worker eviction
@@ -653,23 +670,36 @@ func (b *ConnectionBridge) pollBotInbox(ctx context.Context, token string, gen i
 func (b *ConnectionBridge) Shutdown() {
 	b.regMu.Lock()
 	b.shuttingDown.Store(true)
+	b.draining.Store(true)
+	localBots := make([]struct {
+		token string
+		conn  *BotConn
+	}, 0)
+	b.bots.Range(func(key, value interface{}) bool {
+		localBots = append(localBots, struct {
+			token string
+			conn  *BotConn
+		}{
+			token: key.(string),
+			conn:  value.(*BotConn),
+		})
+		return true
+	})
 	b.regMu.Unlock()
 	log.Info().Str("worker", b.workerID).Msg("Bridge worker shutting down...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Close all bot connections and clean Redis
-	b.bots.Range(func(key, value interface{}) bool {
-		token := key.(string)
-		conn := value.(*BotConn)
-		_ = conn.Close(model.ErrWSServerRestart.Code, model.ErrWSServerRestart.Message)
-		b.rdb.ZRem(ctx, BotAliveKey, token)
-		b.queue.DeleteQueue(ctx, BotInboxPrefix+token)
-		b.cleanupChatInboxes(ctx, token)
-		b.rdb.Del(ctx, BotGenPrefix+token)
-		return true
-	})
+	// Close local bot connections so clients reconnect elsewhere.
+	for _, item := range localBots {
+		_ = item.conn.Close(model.ErrWSServerRestart.Code, model.ErrWSServerRestart.Message)
+	}
+
+	// Reuse UnregisterBot so generation guards protect newer owners.
+	for _, item := range localBots {
+		b.UnregisterBot(ctx, item.token, item.conn)
+	}
 
 	// Cancel all poll tasks
 	b.pollCancels.Range(func(key, value interface{}) bool {
