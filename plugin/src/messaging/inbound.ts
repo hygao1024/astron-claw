@@ -2,12 +2,17 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { SILENT_REPLY_TOKEN, isSilentReplyText, loadWebMedia, extensionForMime } from "openclaw/plugin-sdk";
-
 import {
   BOT_RPC_ERRORS,
   PLUGIN_ID,
 } from "../constants.js";
+import {
+  HEARTBEAT_TOKEN,
+  SILENT_REPLY_TOKEN,
+  extensionForMime,
+  isSilentReplyText,
+  loadMedia,
+} from "../sdk-compat.js";
 import { getRuntime, logger, activeSessionCtx, activeDispatches, pendingToolCtx, recordChannelRuntimeState } from "../runtime.js";
 import { inferMediaType } from "../bridge/media.js";
 import { ensureInboundMediaDir, buildMediaFileName } from "./media-path.js";
@@ -19,7 +24,6 @@ import type { ResolvedAccount } from "../types.js";
 // with relaxed guard — drops the includes("_") check so that the first
 // streaming delta "NO" is also recognised as a prefix of "NO_REPLY").
 // ---------------------------------------------------------------------------
-const HEARTBEAT_TOKEN = "HEARTBEAT_OK";
 const SILENT_TOKENS = [SILENT_REPLY_TOKEN, HEARTBEAT_TOKEN];
 
 function isSilentTokenPrefix(text: string): boolean {
@@ -133,9 +137,9 @@ async function handleJsonRpcPrompt(rpcMsg: any, account: ResolvedAccount, bridge
       const urlBaseName = rawName.replace(/\.[^.]+$/, "") || "file";
 
       try {
-        // Primary: use SDK loadWebMedia (with image optimization)
-        const loaded = await loadWebMedia(downloadUrl);
-        buffer = Buffer.from(loaded.buffer);
+        // Primary: use host runtime media loader for cross-version compatibility.
+        const loaded = await loadMedia(downloadUrl);
+        buffer = loaded.buffer;
         contentType = loaded.contentType ?? "application/octet-stream";
         fileName = loaded.fileName ?? urlBaseName;
       } catch (sdkErr) {

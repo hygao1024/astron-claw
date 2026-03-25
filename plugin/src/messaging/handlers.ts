@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { loadWebMedia, extensionForMime } from "openclaw/plugin-sdk";
-
+import { extensionForMime, loadMedia } from "../sdk-compat.js";
 import { logger } from "../runtime.js";
 import type { MessageHandler, MediaItem } from "../types.js";
 import { ensureInboundMediaDir, buildMediaFileName } from "./media-path.js";
@@ -21,7 +20,7 @@ async function downloadAndSaveMedia(
     throw new Error(`Invalid downloadUrl (expected HTTP URL): ${downloadUrl}`);
   }
 
-  const loaded = await loadWebMedia(downloadUrl);
+  const loaded = await loadMedia(downloadUrl);
   const contentType = loaded.contentType ?? "application/octet-stream";
   const fileName = fileNameOverride ?? loaded.fileName ?? "file";
 

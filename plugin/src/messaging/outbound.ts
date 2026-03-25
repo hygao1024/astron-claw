@@ -1,5 +1,4 @@
-import { loadWebMedia } from "openclaw/plugin-sdk";
-
+import { loadMedia } from "../sdk-compat.js";
 import { logger, recordChannelRuntimeState } from "../runtime.js";
 import { uploadMediaToBridge, inferMediaType, type UploadResult } from "../bridge/media.js";
 import { normalizeTarget } from "./target.js";
@@ -56,8 +55,8 @@ export async function sendMediaMessage(
   const target = normalizeTarget(to);
   if (!target) throw new Error("Invalid target address");
 
-  // Load the media using OpenClaw SDK (supports local paths, URLs, file://, ~ paths)
-  const loaded = await loadWebMedia(mediaUrl);
+  // Load media via host runtime, with local fallback if the runtime surface is absent.
+  const loaded = await loadMedia(mediaUrl);
   const buffer = loaded.buffer;
   const contentType = loaded.contentType ?? options?.mimeType ?? "application/octet-stream";
   const fileName = loaded.fileName ?? options?.fileName ?? "file";
