@@ -15,10 +15,16 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 )
+
+var bridgeTracer = otel.Tracer("astron-claw/service/bridge")
 
 const (
 	BotAliveKey        = "bridge:bot_alive"
@@ -29,6 +35,7 @@ const (
 	CleanupLockKey     = "bridge:cleanup_lock"
 	BotGenPrefix       = "bridge:bot_gen:"
 	WorkerInboxPrefix  = "bridge:worker_inbox:"
+	TraceCtxPrefix     = "bridge:trace_ctx:"
 
 	BotTTL            = 30 * time.Second
 	HeartbeatInterval = 10 * time.Second
@@ -142,6 +149,14 @@ func NewConnectionBridge(rdb redis.UniversalClient, sessionStore *SessionStore, 
 		artifactCleanupWorkers: DefaultArtifactCleanupWorkers,
 		reconcileTokenPos:      make(map[string]int),
 		artifactCleanupCh:      make(chan string, 2048),
+	}
+}
+
+// SetWorkerInboxConsumers overrides the default number of worker inbox consumers.
+// Must be called before Start.
+func (b *ConnectionBridge) SetWorkerInboxConsumers(n int) {
+	if n > 0 {
+		b.workerInboxConsumers = n
 	}
 }
 
@@ -320,11 +335,11 @@ func (b *ConnectionBridge) cleanupChatInboxes(ctx context.Context, token string)
 	idxKey := ChatInboxIdxPrefix + token
 	keys, err := b.rdb.SMembers(ctx, idxKey).Result()
 	if err != nil {
-		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Error reading chat inbox index")
+		log.Warn().Err(err).Str("token", token).Msg("Error reading chat inbox index")
 		return
 	}
 	if len(keys) > 0 {
-		log.Warn().Int("orphan_inboxes", len(keys)).Str("token", pkg.SafePrefix(token, 10)).
+		log.Warn().Int("orphan_inboxes", len(keys)).Str("token", token).
 			Msg("Cleaning up orphan chat inboxes")
 	}
 	for _, k := range keys {
@@ -374,7 +389,7 @@ func (b *ConnectionBridge) RegisterBot(ctx context.Context, token string, conn *
 	b.botGens.Store(token, gen)
 	b.trackReconcileToken(token)
 
-	log.Info().Str("worker", b.workerID).Int64("gen", gen).Str("token", pkg.SafePrefix(token, 10)).
+	log.Info().Str("worker", b.workerID).Int64("gen", gen).Str("token", token).
 		Msg("Bot registered")
 	return nil
 }
@@ -386,10 +401,10 @@ func (b *ConnectionBridge) evictLocal(token string) {
 
 	if loaded && connI != nil {
 		conn := connI.(*BotConn)
-		_ = conn.Close(model.ErrWSEvicted.Code, model.ErrWSEvicted.Message)
+		_ = conn.Close(model.ErrWSEvicted.HTTPStatus, model.ErrWSEvicted.Message)
 	}
 	b.NotifyBotDisconnected(token)
-	log.Info().Str("worker", b.workerID).Str("token", pkg.SafePrefix(token, 10)).Msg("Evicted local bot")
+	log.Info().Str("worker", b.workerID).Str("token", token).Msg("Evicted local bot")
 }
 
 // UnregisterBot removes a bot and conditionally cleans Redis.
@@ -422,7 +437,7 @@ func (b *ConnectionBridge) UnregisterBot(ctx context.Context, token string, conn
 
 	// Clean Redis state
 	b.cleanupSharedBotState(ctx, token, true)
-	log.Info().Str("worker", b.workerID).Str("token", pkg.SafePrefix(token, 10)).Msg("Bot unregistered")
+	log.Info().Str("worker", b.workerID).Str("token", token).Msg("Bot unregistered")
 }
 
 // RemoveBotSessions destroys session data for a token (admin delete).
@@ -433,7 +448,7 @@ func (b *ConnectionBridge) RemoveBotSessions(ctx context.Context, token string) 
 
 	if connI, loaded := b.bots.Load(token); loaded {
 		conn := connI.(*BotConn)
-		_ = conn.Close(model.ErrWSTokenDeleted.Code, model.ErrWSTokenDeleted.Message)
+		_ = conn.Close(model.ErrWSTokenDeleted.HTTPStatus, model.ErrWSTokenDeleted.Message)
 		b.UnregisterBot(ctx, token, nil)
 	} else {
 		route, err := b.ResolveBotRoute(ctx, token)
@@ -445,7 +460,7 @@ func (b *ConnectionBridge) RemoveBotSessions(ctx context.Context, token string) 
 		b.rdb.Del(ctx, BotOwnerPrefix+token)
 		b.rdb.Del(ctx, BotGenPrefix+token)
 	}
-	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Bot sessions fully removed")
+	log.Info().Str("token", token).Msg("Bot sessions fully removed")
 	return nil
 }
 
@@ -461,8 +476,9 @@ func (b *ConnectionBridge) IsBotConnected(ctx context.Context, token string) boo
 // GetConnectionsSummary returns per-token bot online status.
 func (b *ConnectionBridge) GetConnectionsSummary(ctx context.Context) map[string]bool {
 	cutoff := float64(time.Now().Unix()) - BotTTL.Seconds()
+	// "(" prefix = exclusive, so score == cutoff is excluded (aligned with BotStatusMonitor's >= check)
 	alive, _ := b.rdb.ZRangeByScore(ctx, BotAliveKey, &redis.ZRangeBy{
-		Min: fmt.Sprintf("%f", cutoff),
+		Min: "(" + fmt.Sprintf("%f", cutoff),
 		Max: "+inf",
 	}).Result()
 	result := make(map[string]bool, len(alive))
@@ -479,7 +495,7 @@ func (b *ConnectionBridge) CreateSession(ctx context.Context, token string) (str
 	if err != nil {
 		return "", 0, err
 	}
-	log.Info().Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", pkg.SafePrefix(token, 10)).Msg("Session created")
+	log.Info().Str("session", sessionID).Str("token", token).Msg("Session created")
 	return sessionID, num, nil
 }
 
@@ -507,14 +523,14 @@ func (b *ConnectionBridge) SendCancelToBot(ctx context.Context, token, sessionID
 	}
 	route, err := b.ResolveBotRoute(ctx, token)
 	if err != nil {
-		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to resolve bot route for cancel")
+		log.Error().Err(err).Str("token", token).Msg("Failed to resolve bot route for cancel")
 		return err
 	}
 	if err := b.PublishToWorkerInbox(ctx, route.WorkerID, token, rpcRequest); err != nil {
-		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to send cancel to bot")
+		log.Error().Err(err).Str("token", token).Msg("Failed to send cancel to bot")
 		return err
 	}
-	log.Info().Str("session", pkg.SafePrefix(sessionID, 8)).Str("token", pkg.SafePrefix(token, 10)).
+	log.Info().Str("session", sessionID).Str("token", token).
 		Msg("Sent cancel to bot")
 	return nil
 }
@@ -522,7 +538,7 @@ func (b *ConnectionBridge) SendCancelToBot(ctx context.Context, token, sessionID
 // SendToBot creates a JSON-RPC request and sends it to the bot inbox.
 func (b *ConnectionBridge) SendToBot(ctx context.Context, token, userMessage string, mediaURLs []string, sessionID string) (string, error) {
 	if sessionID == "" {
-		log.Error().Str("token", pkg.SafePrefix(token, 10)).Msg("send_to_bot called without session_id")
+		log.Error().Str("token", token).Msg("send_to_bot called without session_id")
 		return "", fmt.Errorf("missing session_id")
 	}
 
@@ -538,7 +554,7 @@ func (b *ConnectionBridge) SendToBot(ctx context.Context, token, userMessage str
 		contentItems = append(contentItems, map[string]string{"type": "url", "content": encodedURL})
 	}
 	if len(contentItems) == 0 {
-		log.Error().Str("token", pkg.SafePrefix(token, 10)).Msg("send_to_bot called with empty content")
+		log.Error().Str("token", token).Msg("send_to_bot called with empty content")
 		return "", fmt.Errorf("empty content")
 	}
 
@@ -556,15 +572,23 @@ func (b *ConnectionBridge) SendToBot(ctx context.Context, token, userMessage str
 
 	route, err := b.ResolveBotRoute(ctx, token)
 	if err != nil {
-		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to resolve bot route")
-		return "", err
-	}
-	if err := b.PublishToWorkerInbox(ctx, route.WorkerID, token, rpcRequest); err != nil {
-		log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to push to bot inbox")
+		log.Error().Err(err).Str("token", token).Msg("Failed to resolve bot route")
 		return "", err
 	}
 
-	log.Info().Str("req", requestID).Int("media", len(mediaURLs)).Str("token", pkg.SafePrefix(token, 10)).
+	// Store trace context for best-effort reverse link (Bot → Chat)
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if data, err := json.Marshal(map[string]string(carrier)); err == nil {
+		b.rdb.Set(ctx, TraceCtxPrefix+sessionID, data, 600*time.Second)
+	}
+
+	if err := b.PublishToWorkerInbox(ctx, route.WorkerID, token, rpcRequest); err != nil {
+		log.Error().Err(err).Str("token", token).Msg("Failed to push to bot inbox")
+		return "", err
+	}
+
+	log.Info().Str("req", requestID).Int("media", len(mediaURLs)).Str("token", token).
 		Msg("Sent to bot (inbox)")
 	return requestID, nil
 }
@@ -573,12 +597,14 @@ func (b *ConnectionBridge) SendToBot(ctx context.Context, token, userMessage str
 func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw string) {
 	var msg map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-		log.Warn().Str("token", pkg.SafePrefix(token, 10)).Msg("Invalid JSON from bot")
+		log.Warn().Str("token", token).Msg("Invalid JSON from bot")
 		return
 	}
 
 	// Ping/pong
-	if msgType, _ := msg["type"].(string); msgType == "ping" {
+	msgType := ""
+	if t, _ := msg["type"].(string); t == "ping" {
+		msgType = "ping"
 		if connI, ok := b.bots.Load(token); ok {
 			conn := connI.(*BotConn)
 			conn.WriteMessage(websocket.TextMessage, []byte("pong"))
@@ -589,12 +615,66 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 	method, _ := msg["method"].(string)
 	params, _ := msg["params"].(map[string]interface{})
 
+	// Determine message_type for span attribute
+	if method != "" {
+		msgType = "notification"
+	} else if _, hasID := msg["id"]; hasID {
+		if _, hasResult := msg["result"]; hasResult {
+			msgType = "result"
+		} else if _, hasErr := msg["error"]; hasErr {
+			msgType = "error"
+		}
+	}
+
+	// Extract sessionId early for trace context restoration
+	var topSessionID string
+	if method != "" {
+		topSessionID, _ = getNestedString(params, "sessionId")
+	} else if _, hasID := msg["id"]; hasID {
+		if errObj, hasErr := msg["error"]; hasErr {
+			if errMap, ok := errObj.(map[string]interface{}); ok && errMap != nil {
+				if dataObj, ok := errMap["data"].(map[string]interface{}); ok {
+					topSessionID, _ = dataObj["sessionId"].(string)
+				}
+			}
+		}
+		if topSessionID == "" {
+			topSessionID, _ = msg["sessionId"].(string)
+		}
+	}
+
+	// Restore trace context from Redis (best-effort, covers all paths)
+	if topSessionID != "" {
+		if raw, err := b.rdb.Get(context.Background(), TraceCtxPrefix+topSessionID).Result(); err == nil {
+			var m map[string]string
+			if json.Unmarshal([]byte(raw), &m) == nil {
+				ctx = otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier(m))
+			}
+		}
+	}
+
 	if method != "" {
 		chatEvent := TranslateBotEvent(method, params)
 		sessionID, _ := getNestedString(params, "sessionId")
+		requestID, _ := getNestedString(params, "requestId")
+
+		// Create bot.message.receive span
+		ctx, msgSpan := bridgeTracer.Start(ctx, "bot.message.receive",
+			trace.WithSpanKind(trace.SpanKindInternal))
+		msgSpan.SetAttributes(
+			attribute.String("astron.token_id", token),
+			attribute.String("astron.method", method),
+			attribute.String("astron.message_type", msgType),
+		)
+		if sessionID != "" {
+			msgSpan.SetAttributes(attribute.String("astron.session_id", sessionID))
+		}
+		if requestID != "" {
+			msgSpan.SetAttributes(attribute.String("astron.turn_id", requestID))
+		}
 
 		if sessionID == "" {
-			log.Warn().Str("method", method).Str("token", pkg.SafePrefix(token, 10)).
+			log.Warn().Str("method", method).Str("token", token).
 				Msg("Bot notification missing sessionId")
 		}
 
@@ -602,24 +682,26 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 			eventType, _ := chatEvent["type"].(string)
 			if eventType == "chunk" || eventType == "thinking" {
 				log.Debug().Str("method", method).Str("type", eventType).
-					Str("token", pkg.SafePrefix(token, 10)).Msg("Bot event")
+					Str("token", token).Msg("Bot event")
 			} else {
-				log.Info().Str("method", method).Str("token", pkg.SafePrefix(token, 10)).Msg("Bot event")
+				log.Info().Str("method", method).Str("token", token).Msg("Bot event")
 			}
 			if sessionID != "" {
 				b.sendToSession(ctx, token, sessionID, chatEvent)
 			}
 		} else {
-			log.Warn().Str("method", method).Str("token", pkg.SafePrefix(token, 10)).
+			log.Warn().Str("method", method).Str("token", token).
 				Msg("Bot event dropped: untranslatable")
 		}
+
+		msgSpan.End()
 	}
 
 	// Result / Error
 	if _, hasID := msg["id"]; hasID {
 		if _, hasResult := msg["result"]; hasResult {
 			reqID, _ := msg["id"].(string)
-			log.Info().Str("req", reqID).Str("token", pkg.SafePrefix(token, 10)).Msg("Bot result")
+			log.Info().Str("req", reqID).Str("token", token).Msg("Bot result")
 		} else if errObj, hasErr := msg["error"]; hasErr {
 			errMap, _ := errObj.(map[string]interface{})
 			sessionID := ""
@@ -637,7 +719,7 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 					errMsg = m
 				}
 			}
-			log.Error().Str("error", errMsg).Str("token", pkg.SafePrefix(token, 10)).Msg("Bot JSON-RPC error")
+			log.Error().Str("error", errMsg).Str("token", token).Msg("Bot JSON-RPC error")
 			if sessionID != "" {
 				b.sendToSession(ctx, token, sessionID, map[string]interface{}{
 					"type": "error", "content": errMsg,
@@ -649,12 +731,12 @@ func (b *ConnectionBridge) HandleBotMessage(ctx context.Context, token, raw stri
 
 // NotifyBotConnected logs bot connection.
 func (b *ConnectionBridge) NotifyBotConnected(token string) {
-	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Bot status -> connected")
+	log.Info().Str("token", token).Msg("Bot status -> connected")
 }
 
 // NotifyBotDisconnected logs bot disconnection.
 func (b *ConnectionBridge) NotifyBotDisconnected(token string) {
-	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Bot status -> disconnected")
+	log.Info().Str("token", token).Msg("Bot status -> disconnected")
 }
 
 func (b *ConnectionBridge) shouldSkipSharedCleanup(ctx context.Context, token string, localGen int64, source string) bool {
@@ -674,7 +756,7 @@ func (b *ConnectionBridge) shouldSkipSharedCleanup(ctx context.Context, token st
 			Int64("local_gen", localGen).
 			Str("worker", b.workerID).
 			Str("source", source).
-			Str("token", pkg.SafePrefix(token, 10)).
+			Str("token", token).
 			Msg("Skip Redis cleanup: newer gen exists")
 		return true
 	}
@@ -692,20 +774,34 @@ func (b *ConnectionBridge) cleanupSharedBotState(ctx context.Context, token stri
 }
 
 func (b *ConnectionBridge) sendToSession(ctx context.Context, token, sessionID string, event map[string]interface{}) {
+	ctx, span := bridgeTracer.Start(ctx, "chat.message.deliver", trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+
+	eventType, _ := event["type"].(string)
+	span.SetAttributes(
+		attribute.String("astron.token_id", token),
+		attribute.String("astron.session_id", sessionID),
+		attribute.String("astron.event_type", eventType),
+	)
+
 	if b.shuttingDown.Load() {
 		return
 	}
 	inbox := ChatInboxPrefix + token + ":" + sessionID
 	exists, _ := b.rdb.Exists(ctx, inbox).Result()
-	if exists == 0 {
-		log.Debug().Str("token", pkg.SafePrefix(token, 10)).Str("session", pkg.SafePrefix(sessionID, 8)).
+	inboxExists := exists > 0
+	span.SetAttributes(attribute.Bool("astron.inbox_exists", inboxExists))
+	if !inboxExists {
+		log.Debug().Str("token", token).Str("session", sessionID).
 			Msg("No active SSE consumer, skipping event")
 		return
 	}
 	data, _ := json.Marshal(event)
 	if _, err := b.queue.Publish(ctx, inbox, string(data)); err != nil {
+		span.SetStatus(codes.Error, "publish to chat inbox failed")
+		span.RecordError(err)
 		if !b.shuttingDown.Load() {
-			log.Error().Err(err).Str("token", pkg.SafePrefix(token, 10)).Str("session", pkg.SafePrefix(sessionID, 8)).
+			log.Error().Err(err).Str("token", token).Str("session", sessionID).
 				Msg("Failed to send to session inbox")
 		}
 	}
@@ -731,7 +827,7 @@ func (b *ConnectionBridge) Shutdown() {
 			localGen = localGenI.(int64)
 		}
 
-		_ = conn.Close(model.ErrWSServerRestart.Code, model.ErrWSServerRestart.Message)
+		_ = conn.Close(model.ErrWSServerRestart.HTTPStatus, model.ErrWSServerRestart.Message)
 		if !b.shouldSkipSharedCleanup(ctx, token, localGen, "shutdown") {
 			b.cleanupSharedBotState(ctx, token, true)
 		}

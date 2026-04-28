@@ -8,11 +8,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 	"astron-claw/backend/internal/service"
 )
+
+var wsTracer = otel.Tracer("astron-claw/router/websocket")
 
 var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -31,11 +35,10 @@ func (app *App) wsBot(c *gin.Context) {
 			log.Error().Err(err).Msg("WS upgrade failed for invalid token")
 			return
 		}
-		msg := websocket.FormatCloseMessage(model.ErrWSInvalidToken.Code, model.ErrWSInvalidToken.Message)
+		msg := websocket.FormatCloseMessage(model.ErrWSInvalidToken.HTTPStatus, model.ErrWSInvalidToken.Message)
 		_ = conn.WriteMessage(websocket.CloseMessage, msg)
 		conn.Close()
-		tp := pkg.SafePrefix(botToken, 10)
-		log.Warn().Str("token", tp).Msg("Bot connection rejected: invalid token")
+		log.Warn().Str("token", botToken).Msg("Bot connection rejected: invalid token")
 		return
 	}
 
@@ -46,37 +49,50 @@ func (app *App) wsBot(c *gin.Context) {
 	}
 
 	clientAddr := c.ClientIP()
-	tp := pkg.SafePrefix(botToken, 10)
 	botConn := &service.BotConn{
 		Conn:  conn,
 		Token: botToken,
 	}
 
-	ctx := c.Request.Context()
+	ctx, regSpan := wsTracer.Start(c.Request.Context(), "bot.connection.register",
+		trace.WithSpanKind(trace.SpanKindInternal))
+	regSpan.SetAttributes(
+		attribute.String("astron.token_id", botToken),
+		attribute.String("astron.client_addr", clientAddr),
+	)
+
 	if err := app.Bridge.RegisterBot(ctx, botToken, botConn); err != nil {
-		log.Error().Err(err).Str("token", tp).Msg("Failed to register bot")
+		regSpan.End()
+		log.Error().Err(err).Str("token", botToken).Msg("Failed to register bot")
 		conn.Close()
 		return
 	}
+	regSpan.End()
 
-	log.Info().Str("token", tp).Str("from", clientAddr).Msg("Bot connected")
+	log.Info().Str("token", botToken).Str("from", clientAddr).Msg("Bot connected")
 	app.Bridge.NotifyBotConnected(botToken)
 
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		unregCtx, unregSpan := wsTracer.Start(context.Background(), "bot.connection.unregister",
+			trace.WithSpanKind(trace.SpanKindInternal))
+		unregSpan.SetAttributes(
+			attribute.String("astron.token_id", botToken),
+		)
+		cleanupCtx, cancel := context.WithTimeout(unregCtx, 10*time.Second)
 		defer cancel()
 		app.Bridge.UnregisterBot(cleanupCtx, botToken, botConn)
+		unregSpan.End()
 	}()
 
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				log.Info().Str("token", tp).Str("from", clientAddr).Msg("Bot disconnected normally")
+				log.Info().Str("token", botToken).Str("from", clientAddr).Msg("Bot disconnected normally")
 			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				log.Info().Str("token", tp).Str("from", clientAddr).Err(err).Msg("Bot disconnected unexpectedly")
+				log.Info().Str("token", botToken).Str("from", clientAddr).Err(err).Msg("Bot disconnected unexpectedly")
 			} else {
-				log.Error().Err(err).Str("token", tp).Msg("Bot connection error")
+				log.Error().Err(err).Str("token", botToken).Msg("Bot connection error")
 			}
 			return
 		}

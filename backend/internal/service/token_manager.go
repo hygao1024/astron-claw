@@ -13,7 +13,6 @@ import (
 	"gorm.io/gorm"
 
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 )
 
 // NeverExpires is the maximum MySQL DATETIME — used for tokens with no expiry.
@@ -53,7 +52,7 @@ func (m *TokenManager) Generate(ctx context.Context, name string, expiresIn int)
 		return "", fmt.Errorf("create token: %w", err)
 	}
 
-	log.Info().Str("token", pkg.SafePrefix(tokenValue, 16)).Str("name", name).Int("expires_in", expiresIn).Msg("Token generated")
+	log.Info().Str("token", tokenValue).Str("name", name).Int("expires_in", expiresIn).Msg("Token generated")
 	return tokenValue, nil
 }
 
@@ -72,10 +71,10 @@ func (m *TokenManager) Validate(ctx context.Context, token string) bool {
 	}
 
 	if count > 0 {
-		log.Debug().Str("token", pkg.SafePrefix(token, 10)).Msg("Token validated")
+		log.Debug().Str("token", token).Msg("Token validated")
 		return true
 	}
-	log.Debug().Str("token", pkg.SafePrefix(token, 10)).Msg("Token validation failed")
+	log.Debug().Str("token", token).Msg("Token validation failed")
 	return false
 }
 
@@ -84,7 +83,7 @@ func (m *TokenManager) Update(ctx context.Context, tokenValue string, name *stri
 	var token model.Token
 	if err := m.db.WithContext(ctx).Where("token = ?", tokenValue).First(&token).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			log.Warn().Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Token update failed: not found")
+			log.Warn().Str("token", tokenValue).Msg("Token update failed: not found")
 			return false, nil
 		}
 		return false, err
@@ -117,7 +116,7 @@ func (m *TokenManager) Remove(ctx context.Context, tokenValue string) error {
 	}
 	// Invalidate token auth cache
 	m.rdb.Del(ctx, "token_auth:"+tokenValue)
-	log.Info().Str("token", pkg.SafePrefix(tokenValue, 16)).Msg("Token removed")
+	log.Info().Str("token", tokenValue).Msg("Token removed")
 	return nil
 }
 
@@ -236,7 +235,8 @@ func (m *TokenManager) BulkCheckBotOnline(ctx context.Context, tokens []string) 
 // CountOnlineBots returns the total number of online bots.
 func (m *TokenManager) CountOnlineBots(ctx context.Context) int {
 	cutoff := float64(time.Now().Unix()) - 30 // BotTTL = 30s
-	count, err := m.rdb.ZCount(ctx, "bridge:bot_alive", fmt.Sprintf("%f", cutoff), "+inf").Result()
+	// "(" prefix = exclusive, so score == cutoff is excluded (aligned with BotStatusMonitor's >= check)
+	count, err := m.rdb.ZCount(ctx, "bridge:bot_alive", "("+fmt.Sprintf("%f", cutoff), "+inf").Result()
 	if err != nil {
 		log.Warn().Err(err).Msg("Failed to count online bots")
 		return 0

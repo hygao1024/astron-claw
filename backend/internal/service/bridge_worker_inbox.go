@@ -7,8 +7,6 @@ import (
 	"strconv"
 
 	"github.com/rs/zerolog/log"
-
-	"astron-claw/backend/internal/pkg"
 )
 
 type workerInboxMessage struct {
@@ -111,7 +109,7 @@ func (b *ConnectionBridge) runWorkerInboxConsumer(inbox, consumerID string) {
 
 		connI, ok := b.bots.Load(msg.Token)
 		if !ok {
-			log.Warn().Str("worker", b.workerID).Str("token", pkg.SafePrefix(msg.Token, 10)).
+			log.Warn().Str("worker", b.workerID).Str("token", msg.Token).
 				Msg("Worker inbox token not found locally")
 			continue
 		}
@@ -119,7 +117,7 @@ func (b *ConnectionBridge) runWorkerInboxConsumer(inbox, consumerID string) {
 		conn := connI.(*BotConn)
 		if msg.RPCRequest != nil {
 			if err := conn.WriteJSON(msg.RPCRequest); err != nil {
-				log.Warn().Err(err).Str("worker", b.workerID).Str("token", pkg.SafePrefix(msg.Token, 10)).
+				log.Warn().Err(err).Str("worker", b.workerID).Str("token", msg.Token).
 					Msg("Failed to forward worker inbox payload")
 			}
 		}

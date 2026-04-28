@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-
-	"astron-claw/backend/internal/pkg"
 )
 
 func (b *ConnectionBridge) trackReconcileToken(token string) {
@@ -83,7 +81,7 @@ func (b *ConnectionBridge) doReconcile() {
 	for _, token := range tokens {
 		owner, err := b.GetBotOwner(ctx, token)
 		if err == nil && owner != "" && owner != b.workerID {
-			log.Info().Str("worker", b.workerID).Str("token", pkg.SafePrefix(token, 10)).
+			log.Info().Str("worker", b.workerID).Str("token", token).
 				Str("remote_owner", owner).Msg("Reconcile evicted: owner changed")
 			b.evictLocal(token)
 			continue
@@ -105,7 +103,7 @@ func (b *ConnectionBridge) doReconcile() {
 		}
 		if remoteGen > localGen {
 			log.Info().Int64("remote_gen", remoteGen).Int64("local_gen", localGen).
-				Str("worker", b.workerID).Str("token", pkg.SafePrefix(token, 10)).
+				Str("worker", b.workerID).Str("token", token).
 				Msg("Reconcile evicted: newer generation exists")
 			b.evictLocal(token)
 		}

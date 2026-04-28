@@ -1,6 +1,11 @@
 package telemetry
 
 import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -16,11 +21,21 @@ var (
 	ChatRequestTotal    metric.Int64Counter
 	ChatRequestDuration metric.Float64Histogram
 	ChatStreamDuration  metric.Float64Histogram
-	ChatActiveStreams   metric.Int64UpDownCounter
+	BotAliveCount       metric.Int64ObservableGauge
 )
+
+// Redis client for bot alive count callback
+var rdbForMetrics redis.UniversalClient
+
+const botAliveKey = "bridge:bot_alive"
 
 func init() {
 	EnsureInstruments()
+}
+
+// SetRedisForMetrics sets the Redis client used by the bot alive count gauge callback.
+func SetRedisForMetrics(rdb redis.UniversalClient) {
+	rdbForMetrics = rdb
 }
 
 // EnsureInstruments creates or re-creates OTel instruments using the current MeterProvider.
@@ -30,7 +45,7 @@ func EnsureInstruments() {
 	var err error
 	ChatRequestTotal, err = meter.Int64Counter(
 		"bridge.chat.requests",
-		metric.WithDescription("/bridge/chat request total"),
+		metric.WithDescription("HTTP request total (all endpoints)"),
 	)
 	if err != nil {
 		ChatRequestTotal, _ = meter.Int64Counter("bridge.chat.requests")
@@ -38,7 +53,7 @@ func EnsureInstruments() {
 
 	ChatRequestDuration, err = meter.Float64Histogram(
 		"bridge.chat.request.duration",
-		metric.WithDescription("/bridge/chat first-byte latency"),
+		metric.WithDescription("Time to first Redis result for SSE, or full duration for other endpoints"),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
@@ -47,20 +62,42 @@ func EnsureInstruments() {
 
 	ChatStreamDuration, err = meter.Float64Histogram(
 		"bridge.chat.stream.duration",
-		metric.WithDescription("SSE stream duration"),
+		metric.WithDescription("SSE stream duration (/bridge/chat only)"),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
 		ChatStreamDuration, _ = meter.Float64Histogram("bridge.chat.stream.duration")
 	}
 
-	ChatActiveStreams, err = meter.Int64UpDownCounter(
-		"bridge.chat.active_streams",
-		metric.WithDescription("Current active SSE stream count"),
+	BotAliveCount, err = meter.Int64ObservableGauge(
+		"bridge.bot.alive_count",
+		metric.WithDescription("Number of bots alive in the last 30 seconds"),
+		metric.WithInt64Callback(botAliveCountCallback),
 	)
 	if err != nil {
-		ChatActiveStreams, _ = meter.Int64UpDownCounter("bridge.chat.active_streams")
+		BotAliveCount, _ = meter.Int64ObservableGauge("bridge.bot.alive_count")
 	}
+}
+
+// botAliveCountCallback queries Redis ZSET to count bots alive in the last 30 seconds.
+func botAliveCountCallback(ctx context.Context, observer metric.Int64Observer) error {
+	if rdbForMetrics == nil {
+		observer.Observe(0)
+		return nil
+	}
+
+	now := float64(time.Now().Unix())
+	cutoff := now - 30.0
+
+	// "(" prefix = exclusive, so score == cutoff is excluded (aligned with BotStatusMonitor's >= check)
+	count, err := rdbForMetrics.ZCount(ctx, botAliveKey, "("+fmt.Sprintf("%f", cutoff), "+inf").Result()
+	if err != nil {
+		observer.Observe(0)
+		return nil
+	}
+
+	observer.Observe(count)
+	return nil
 }
 
 // TokenPrefix returns first 10 chars + "..." for token labels.

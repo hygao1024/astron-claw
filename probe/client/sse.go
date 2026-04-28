@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/hygao1024/astron-claw/probe/model"
 )
@@ -17,6 +18,7 @@ type ChatResult struct {
 	Content   string // final content from the "done" event
 	HasError  bool
 	ErrorMsg  string
+	TTFB      time.Duration // time to first byte (first SSE data line)
 }
 
 // Chat sends a message to /bridge/chat and reads the SSE stream until done or error.
@@ -29,6 +31,7 @@ func Chat(ctx context.Context, baseURL, token, message string) (*ChatResult, err
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
+	requestStart := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, model.NewCodeError(-1, "request failed: %v", err)
@@ -49,6 +52,7 @@ func Chat(ctx context.Context, baseURL, token, message string) (*ChatResult, err
 	result := &ChatResult{}
 	scanner := bufio.NewScanner(resp.Body)
 	var eventType string
+	firstData := true
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -59,6 +63,10 @@ func Chat(ctx context.Context, baseURL, token, message string) (*ChatResult, err
 		}
 
 		if strings.HasPrefix(line, "data: ") {
+			if firstData {
+				result.TTFB = time.Since(requestStart)
+				firstData = false
+			}
 			data := strings.TrimPrefix(line, "data: ")
 
 			switch eventType {

@@ -11,40 +11,44 @@ import (
 
 func TestErrorCodes(t *testing.T) {
 	tests := []struct {
-		name string
-		err  AppError
-		code int
+		name       string
+		err        AppError
+		httpStatus int
+		bizCode    int
 	}{
-		{"AuthInvalidToken", ErrAuthInvalidToken, http.StatusUnauthorized},
-		{"AuthMissingAuth", ErrAuthMissingAuth, http.StatusUnauthorized},
-		{"AuthInvalidSession", ErrAuthInvalidSession, http.StatusUnauthorized},
-		{"AuthUnauthorized", ErrAuthUnauthorized, http.StatusUnauthorized},
-		{"AuthWrongPassword", ErrAuthWrongPassword, http.StatusUnauthorized},
-		{"AdminPasswordExists", ErrAdminPasswordExists, http.StatusBadRequest},
-		{"AdminPasswordShort", ErrAdminPasswordShort, http.StatusBadRequest},
-		{"ChatEmptyMessage", ErrChatEmptyMessage, http.StatusBadRequest},
-		{"ChatNoBot", ErrChatNoBot, http.StatusBadRequest},
-		{"ChatSendFailed", ErrChatSendFailed, http.StatusInternalServerError},
-		{"ChatStreamTimeout", ErrChatStreamTimeout, 0},
-		{"ChatInternalError", ErrChatInternalError, 0},
-		{"MediaFileTooLarge", ErrMediaFileTooLarge, http.StatusRequestEntityTooLarge},
-		{"MediaInvalidFile", ErrMediaInvalidFile, http.StatusBadRequest},
-		{"MediaBadURLScheme", ErrMediaBadURLScheme, http.StatusBadRequest},
-		{"MediaUnsupportedType", ErrMediaUnsupportedType, http.StatusBadRequest},
-		{"MediaTooMany", ErrMediaTooMany, http.StatusBadRequest},
-		{"SessionNotFound", ErrSessionNotFound, http.StatusNotFound},
-		{"TokenNotFound", ErrTokenNotFound, http.StatusNotFound},
-		{"WSInvalidToken", ErrWSInvalidToken, 4001},
-		{"WSTokenDeleted", ErrWSTokenDeleted, 4003},
-		{"WSServerRestart", ErrWSServerRestart, 4000},
-		{"WSEvicted", ErrWSEvicted, 4005},
-		{"BotUnknownError", ErrBotUnknownError, 0},
+		{"AuthInvalidToken", ErrAuthInvalidToken, http.StatusUnauthorized, CodeAuthInvalidToken},
+		{"AuthMissingAuth", ErrAuthMissingAuth, http.StatusUnauthorized, CodeAuthMissingAuth},
+		{"AuthInvalidSession", ErrAuthInvalidSession, http.StatusUnauthorized, CodeAuthInvalidSession},
+		{"AuthUnauthorized", ErrAuthUnauthorized, http.StatusUnauthorized, CodeAuthUnauthorized},
+		{"AuthWrongPassword", ErrAuthWrongPassword, http.StatusUnauthorized, CodeAuthWrongPassword},
+		{"AdminPasswordExists", ErrAdminPasswordExists, http.StatusBadRequest, CodeAdminPasswordExists},
+		{"AdminPasswordShort", ErrAdminPasswordShort, http.StatusBadRequest, CodeAdminPasswordShort},
+		{"ChatEmptyMessage", ErrChatEmptyMessage, http.StatusBadRequest, CodeChatEmptyMessage},
+		{"ChatNoBot", ErrChatNoBot, http.StatusBadRequest, CodeChatNoBot},
+		{"ChatSendFailed", ErrChatSendFailed, http.StatusInternalServerError, CodeChatSendFailed},
+		{"ChatStreamTimeout", ErrChatStreamTimeout, http.StatusInternalServerError, CodeChatStreamTimeout},
+		{"ChatInternalError", ErrChatInternalError, http.StatusInternalServerError, CodeChatInternalError},
+		{"MediaFileTooLarge", ErrMediaFileTooLarge, http.StatusRequestEntityTooLarge, CodeMediaFileTooLarge},
+		{"MediaInvalidFile", ErrMediaInvalidFile, http.StatusBadRequest, CodeMediaInvalidFile},
+		{"MediaBadURLScheme", ErrMediaBadURLScheme, http.StatusBadRequest, CodeMediaBadURLScheme},
+		{"MediaUnsupportedType", ErrMediaUnsupportedType, http.StatusBadRequest, CodeMediaUnsupportedType},
+		{"MediaTooMany", ErrMediaTooMany, http.StatusBadRequest, CodeMediaTooMany},
+		{"SessionNotFound", ErrSessionNotFound, http.StatusNotFound, CodeSessionNotFound},
+		{"TokenNotFound", ErrTokenNotFound, http.StatusNotFound, CodeTokenNotFound},
+		{"WSInvalidToken", ErrWSInvalidToken, 4001, CodeWSInvalidToken},
+		{"WSTokenDeleted", ErrWSTokenDeleted, 4003, CodeWSTokenDeleted},
+		{"WSServerRestart", ErrWSServerRestart, 4000, CodeWSServerRestart},
+		{"WSEvicted", ErrWSEvicted, 4005, CodeWSEvicted},
+		{"BotUnknownError", ErrBotUnknownError, http.StatusInternalServerError, CodeBotUnknownError},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.err.Code != tt.code {
-				t.Errorf("%s: code = %d, want %d", tt.name, tt.err.Code, tt.code)
+			if tt.err.HTTPStatus != tt.httpStatus {
+				t.Errorf("%s: HTTPStatus = %d, want %d", tt.name, tt.err.HTTPStatus, tt.httpStatus)
+			}
+			if tt.err.Code != tt.bizCode {
+				t.Errorf("%s: Code = %d, want %d", tt.name, tt.err.Code, tt.bizCode)
 			}
 			if tt.err.Message == "" {
 				t.Errorf("%s: message should not be empty", tt.name)
@@ -66,6 +70,9 @@ func TestErrorResponse(t *testing.T) {
 		}
 		var resp map[string]interface{}
 		json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp["code"] != float64(CodeChatNoBot) {
+			t.Errorf("code = %v, want %d", resp["code"], CodeChatNoBot)
+		}
 		if resp["error"] != "No bot connected" {
 			t.Errorf("error = %v, want 'No bot connected'", resp["error"])
 		}

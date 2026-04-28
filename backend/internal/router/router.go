@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"gorm.io/gorm"
 
 	"astron-claw/backend/internal/config"
@@ -15,22 +16,27 @@ import (
 
 // App holds all application dependencies.
 type App struct {
-	DB        *gorm.DB
-	RDB       redis.UniversalClient
-	TokenMgr  *service.TokenManager
-	AdminAuth *service.AdminAuth
-	MediaMgr  *service.MediaManager
-	Bridge    *service.ConnectionBridge
-	Queue     service.MessageQueue
-	Storage   storage.ObjectStorage
-	Config    *config.AppConfig
+	DB               *gorm.DB
+	RDB              redis.UniversalClient
+	TokenMgr         *service.TokenManager
+	AdminAuth        *service.AdminAuth
+	MediaMgr         *service.MediaManager
+	Bridge           *service.ConnectionBridge
+	Queue            service.MessageQueue
+	Storage          storage.ObjectStorage
+	Config           *config.AppConfig
+	BotStatusMonitor *service.BotStatusMonitor
 }
 
 // SetupRouter configures all routes and middleware.
-func SetupRouter(app *App) *gin.Engine {
+func SetupRouter(app *App, podIP string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+
 	r.Use(gin.Recovery())
+	r.Use(otelgin.Middleware("astron_claw"))
+	// Metrics middleware must be after Recovery to capture panic errors
+	r.Use(middleware.MetricsMiddleware(podIP))
 
 	// Global body size limit (32 MB)
 	r.MaxMultipartMemory = 32 << 20
@@ -43,10 +49,6 @@ func SetupRouter(app *App) *gin.Engine {
 
 	// Health
 	r.GET("/api/health", app.healthCheck)
-
-	// Metrics
-	r.GET("/api/metrics", app.getMetrics)
-	r.DELETE("/api/metrics", app.deleteMetrics)
 
 	// Tokens (public)
 	r.POST("/api/token", app.createToken)
@@ -88,7 +90,7 @@ func (app *App) adminAuthMiddleware() gin.HandlerFunc {
 		adminSession, _ := c.Cookie("admin_session")
 		if !app.AdminAuth.ValidateSession(c.Request.Context(), adminSession) {
 			log.Warn().Msg("Admin auth rejected: missing or invalid session cookie")
-			model.ErrorResponse(c, model.ErrAuthUnauthorized)
+			middleware.MetricsErrorResponse(c, model.ErrAuthUnauthorized)
 			c.Abort()
 			return
 		}

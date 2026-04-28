@@ -54,10 +54,12 @@ func (c MysqlConfig) DSNWithoutDB() string {
 }
 
 type RedisConfig struct {
-	Password string
-	DB       int
-	Addrs    []string
-	Cluster  bool
+	Password     string
+	DB           int
+	Addrs        []string
+	Cluster      bool
+	PoolSize     int
+	MinIdleConns int
 }
 
 // IsCluster returns true when Redis Cluster mode is explicitly enabled or
@@ -73,14 +75,15 @@ type DBPoolConfig struct {
 }
 
 type ServerConfig struct {
-	Host           string
-	Port           int
-	Workers        int
-	LogLevel       string
-	AccessLog      bool
-	WSPingInterval int
-	WSPingTimeout  int
-	SecureCookie   bool
+	Host                 string
+	Port                 int
+	Workers              int
+	LogLevel             string
+	AccessLog            bool
+	WSPingInterval       int
+	WSPingTimeout        int
+	SecureCookie         bool
+	WorkerInboxConsumers int
 }
 
 type QueueConfig struct {
@@ -99,15 +102,17 @@ type StorageConfig struct {
 	Region         string
 	TTL            int
 	PublicRead     bool
+	PathStyle      bool
 }
 
 type OtlpConfig struct {
-	Enabled          bool
-	ServiceName      string
-	ExportIntervalMs int
-	MetricsEnabled   bool
-	TracesEnabled    bool
-	LogsEnabled      bool
+	Enabled        bool
+	ServiceName    string
+	Endpoint       string
+	Insecure       bool
+	MetricsEnabled bool
+	TracesEnabled  bool
+	LogsEnabled    bool
 }
 
 type CorsConfig struct {
@@ -151,20 +156,23 @@ func Load() *AppConfig {
 			Database: getEnv("MYSQL_DATABASE", "astron_claw"),
 		},
 		Redis: RedisConfig{
-			Password: getEnv("REDIS_PASSWORD", ""),
-			DB:       getEnvInt("REDIS_DB", 0),
-			Addrs:    splitCSV(getEnv("REDIS_ADDRS", "127.0.0.1:6379")),
-			Cluster:  getEnvBool("REDIS_CLUSTER", false),
+			Password:     getEnv("REDIS_PASSWORD", ""),
+			DB:           getEnvInt("REDIS_DB", 0),
+			Addrs:        splitCSV(getEnv("REDIS_ADDRS", "127.0.0.1:6379")),
+			Cluster:      getEnvBool("REDIS_CLUSTER", false),
+			PoolSize:     getEnvInt("REDIS_POOL_SIZE", runtime.GOMAXPROCS(0)*10),
+			MinIdleConns: getEnvInt("REDIS_MIN_IDLE_CONNS", 10),
 		},
 		Server: ServerConfig{
-			Host:           getEnv("SERVER_HOST", "0.0.0.0"),
-			Port:           getEnvInt("SERVER_PORT", 8765),
-			Workers:        getEnvInt("SERVER_WORKERS", runtime.NumCPU()+1),
-			LogLevel:       getEnv("SERVER_LOG_LEVEL", "info"),
-			AccessLog:      getEnvBool("SERVER_ACCESS_LOG", true),
-			WSPingInterval: getEnvInt("WS_PING_INTERVAL", 10),
-			WSPingTimeout:  getEnvInt("WS_PING_TIMEOUT", 10),
-			SecureCookie:   getEnvBool("COOKIE_SECURE", false),
+			Host:                 getEnv("SERVER_HOST", "0.0.0.0"),
+			Port:                 getEnvInt("SERVER_PORT", 8765),
+			Workers:              getEnvInt("SERVER_WORKERS", runtime.NumCPU()+1),
+			LogLevel:             getEnv("SERVER_LOG_LEVEL", "info"),
+			AccessLog:            getEnvBool("SERVER_ACCESS_LOG", true),
+			WSPingInterval:       getEnvInt("WS_PING_INTERVAL", 10),
+			WSPingTimeout:        getEnvInt("WS_PING_TIMEOUT", 10),
+			SecureCookie:         getEnvBool("COOKIE_SECURE", false),
+			WorkerInboxConsumers: getEnvInt("WORKER_INBOX_CONSUMERS", 4),
 		},
 		Queue: QueueConfig{
 			Type:         getEnv("QUEUE_TYPE", "redis_stream"),
@@ -181,14 +189,16 @@ func Load() *AppConfig {
 			Region:         getEnv("OSS_REGION", "us-east-1"),
 			TTL:            getEnvInt("OSS_TTL", 157788000),
 			PublicRead:     getEnvBool("OSS_PUBLIC_READ", true),
+			PathStyle:      getEnvBool("OSS_PATH_STYLE", true),
 		},
 		OTLP: OtlpConfig{
-			Enabled:          getEnvBool("OTLP_ENABLED", false),
-			ServiceName:      getEnv("OTLP_SERVICE_NAME", "astron-claw"),
-			ExportIntervalMs: getEnvInt("OTLP_EXPORT_INTERVAL_MS", 10000),
-			MetricsEnabled:   true,
-			TracesEnabled:    false,
-			LogsEnabled:      false,
+			Enabled:        getEnvBool("OTLP_ENABLED", false),
+			ServiceName:    getEnv("OTLP_SERVICE_NAME", "astron-claw"),
+			Endpoint:       buildOtlpEndpoint(),
+			Insecure:       getEnvBool("OTLP_INSECURE", false),
+			MetricsEnabled: getEnvBool("OTLP_METRICS_ENABLED", true),
+			TracesEnabled:  getEnvBool("OTLP_TRACES_ENABLED", false),
+			LogsEnabled:    getEnvBool("OTLP_LOGS_ENABLED", false),
 		},
 		CORS: CorsConfig{
 			Origins: splitCSV(getEnv("CORS_ORIGINS", "*")),
@@ -232,6 +242,16 @@ func getEnvBool(key string, defaultVal bool) bool {
 		return strings.ToLower(v) == "true"
 	}
 	return defaultVal
+}
+
+// buildOtlpEndpoint constructs the OTLP collector endpoint from POD_IP and
+// OTLP_PORT. In Kubernetes, POD_IP is injected via the Downward API and points
+// to the node-local collector sidecar/DaemonSet. Falls back to localhost when
+// POD_IP is unset (local development).
+func buildOtlpEndpoint() string {
+	port := getEnv("OTLP_PORT", "4317")
+	host := getEnv("POD_IP", "localhost")
+	return host + ":" + port
 }
 
 func splitCSV(s string) []string {

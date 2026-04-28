@@ -40,10 +40,12 @@ func main() {
 	}
 
 	// Initialize OTLP telemetry
-	if err := telemetry.Init(cfg.OTLP, rdb); err != nil {
+	if err := telemetry.Init(ctx, cfg.OTLP); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialise OTLP telemetry")
 	}
 	telemetry.EnsureInstruments()
+	telemetry.EnsureLogger()
+	telemetry.SetRedisForMetrics(rdb)
 
 	// Run database migrations
 	if err := infra.RunMigrations(ctx, cfg.MySQL, rdb); err != nil {
@@ -73,21 +75,33 @@ func main() {
 	// Initialize session store and bridge
 	sessionStore := service.NewSessionStore(db, rdb)
 	bridge := service.NewConnectionBridge(rdb, sessionStore, queue)
+	bridge.SetWorkerInboxConsumers(cfg.Server.WorkerInboxConsumers)
 	bridge.Start()
+
+	// Initialize bot status monitor
+	botStatusMonitor := service.NewBotStatusMonitor(rdb)
+	botStatusMonitor.Start()
+
+	// Read Pod IP for metrics
+	podIP := os.Getenv("POD_IP")
+	if podIP == "" {
+		podIP = "unknown"
+	}
 
 	// Build the app and router
 	app := &router.App{
-		DB:        db,
-		RDB:       rdb,
-		TokenMgr:  tokenMgr,
-		AdminAuth: adminAuth,
-		MediaMgr:  mediaMgr,
-		Bridge:    bridge,
-		Queue:     queue,
-		Storage:   store,
-		Config:    cfg,
+		DB:               db,
+		RDB:              rdb,
+		TokenMgr:         tokenMgr,
+		AdminAuth:        adminAuth,
+		MediaMgr:         mediaMgr,
+		Bridge:           bridge,
+		Queue:            queue,
+		Storage:          store,
+		Config:           cfg,
+		BotStatusMonitor: botStatusMonitor,
 	}
-	r := router.SetupRouter(app)
+	r := router.SetupRouter(app, podIP)
 
 	// Start HTTP server
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
@@ -123,6 +137,7 @@ func main() {
 	}
 
 	bridge.Shutdown()
+	botStatusMonitor.Stop()
 	telemetry.Shutdown()
 
 	if err := store.Close(); err != nil {

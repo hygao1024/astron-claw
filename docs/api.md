@@ -1492,34 +1492,84 @@ print(data["status"])  # "ok" or "degraded"
 **错误响应：**
 
 ```json
-{"code": 400, "error": "Password already set"}
+{"code": 10100, "error": "Password already set"}
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `code` | integer | `0` 表示成功，`> 0` 表示失败（值为 HTTP 状态码） |
+| `code` | integer | `0` 表示成功，`10000+` 表示业务错误码 |
 | `error` | string | 仅失败时存在，人类可读的错误描述（可含动态详情，如 `"Session not found: <id>"`) |
 
-### 错误码清单
+### 业务错误码清单
+
+错误码从 10000 开始，按功能模块分段：
+
+#### 认证错误 (10001-10099)
 
 | code | HTTP 状态码 | 消息 | 使用场景 |
 |------|-----------|------|---------|
-| `401` | 401 | Invalid or missing token | Token 无效或缺失 |
-| `401` | 401 | Missing authorization | 缺少 Authorization Header |
-| `401` | 401 | Invalid admin session | Admin Session 无效或过期 |
-| `401` | 401 | Unauthorized | Admin 未认证 |
-| `401` | 401 | Wrong password | 管理员登录密码错误 |
-| `400` | 400 | Password already set | 重复设置密码 |
-| `400` | 400 | Password too short | 密码少于 4 个字符 |
-| `400` | 400 | Empty message | 消息内容和媒体均为空 |
-| `400` | 400 | No bot connected | Token 对应的 Bot 未在线 |
-| `500` | 500 | Failed to send message to bot | 消息推送到 Bot 失败 |
-| `413` | 413 | File too large | 文件超过大小限制 |
-| `400` | 400 | Invalid file or unsupported type | 无效文件或不支持的类型 |
-| `400` | 400 | Invalid media URL scheme | 媒体 URL 非 http/https |
-| `400` | 400 | Unsupported media type | 不支持的媒体类型 |
-| `404` | 404 | Session not found | 指定的会话不存在 |
-| `404` | 404 | Token not found | 指定的 Token 不存在 |
+| `10001` | 401 | Invalid or missing token | Token 无效或缺失 |
+| `10002` | 401 | Missing authorization | 缺少 Authorization Header |
+| `10003` | 401 | Invalid admin session | Admin Session 无效或过期 |
+| `10004` | 401 | Unauthorized | Admin 未认证 |
+| `10005` | 401 | Wrong password | 管理员登录密码错误 |
+
+#### 管理员设置错误 (10100-10199)
+
+| code | HTTP 状态码 | 消息 | 使用场景 |
+|------|-----------|------|---------|
+| `10100` | 400 | Password already set | 重复设置密码 |
+| `10101` | 400 | Password too short | 密码少于 8 个字符 |
+
+#### Chat/SSE 错误 (10200-10299)
+
+| code | HTTP 状态码 | 消息 | 使用场景 |
+|------|-----------|------|---------|
+| `10200` | 400 | Empty message | 消息内容和媒体均为空 |
+| `10201` | 400 | No bot connected | Token 对应的 Bot 未在线 |
+| `10202` | 400 | Invalid request | 请求格式错误 |
+| `10203` | 500 | Failed to send message to bot | 消息推送到 Bot 失败 |
+| `10204` | 500 | Stream timeout | SSE 流超时（10 分钟） |
+| `10205` | 500 | Internal server error | 内部服务器错误 |
+| `10206` | 500 | Streaming not supported | 流式响应不支持 |
+
+#### 媒体错误 (10300-10399)
+
+| code | HTTP 状态码 | 消息 | 使用场景 |
+|------|-----------|------|---------|
+| `10300` | 413 | File too large | 文件超过大小限制（500MB） |
+| `10301` | 400 | Invalid file or unsupported type | 无效文件或不支持的类型 |
+| `10302` | 400 | Invalid media URL scheme | 媒体 URL 非 http/https |
+| `10303` | 400 | Unsupported media type | 不支持的媒体类型 |
+| `10304` | 400 | Too many media items (max 10) | 媒体项超过 10 个 |
+
+#### 会话错误 (10400-10499)
+
+| code | HTTP 状态码 | 消息 | 使用场景 |
+|------|-----------|------|---------|
+| `10400` | 404 | Session not found | 指定的会话不存在 |
+| `10401` | 500 | Failed to create session | 会话创建失败 |
+
+#### Token 错误 (10500-10599)
+
+| code | HTTP 状态码 | 消息 | 使用场景 |
+|------|-----------|------|---------|
+| `10500` | 404 | Token not found | 指定的 Token 不存在 |
+
+#### WebSocket 错误 (10600-10699)
+
+| code | WS 关闭码 | 消息 | 使用场景 |
+|------|----------|------|---------|
+| `10600` | 4001 | Invalid or missing bot token | Bot Token 无效或缺失 |
+| `10601` | 4003 | Token deleted | Token 被管理员删除 |
+| `10602` | 4000 | Server restarting | 服务器重启中 |
+| `10603` | 4005 | Evicted by newer connection | 被新连接踢出 |
+
+#### Bot 错误 (10700-10799)
+
+| code | HTTP 状态码 | 消息 | 使用场景 |
+|------|-----------|------|---------|
+| `10700` | 500 | Unknown error from bot | Bot 返回未知错误 |
 
 ### HTTP 状态码
 

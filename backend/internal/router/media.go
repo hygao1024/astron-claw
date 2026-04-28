@@ -6,8 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"astron-claw/backend/internal/middleware"
 	"astron-claw/backend/internal/model"
-	"astron-claw/backend/internal/pkg"
 	"astron-claw/backend/internal/service"
 )
 
@@ -16,7 +16,7 @@ func (app *App) uploadMedia(c *gin.Context) {
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		model.ErrorResponse(c, model.ErrMediaInvalidFile)
+		middleware.MetricsErrorResponse(c, model.ErrMediaInvalidFile)
 		return
 	}
 	defer file.Close()
@@ -26,7 +26,7 @@ func (app *App) uploadMedia(c *gin.Context) {
 	fileSize := header.Size
 	if fileSize > service.MaxFileSize {
 		log.Warn().Int64("size", fileSize).Msg("Media upload rejected: file too large")
-		model.ErrorResponse(c, model.ErrMediaFileTooLarge)
+		middleware.MetricsErrorResponse(c, model.ErrMediaFileTooLarge)
 		return
 	}
 
@@ -42,19 +42,19 @@ func (app *App) uploadMedia(c *gin.Context) {
 	result, err := app.MediaMgr.Store(file, fileName, fileSize, mimeType, sessionID)
 	if err != nil {
 		if errors.Is(err, service.ErrFileTooLarge) {
-			model.ErrorResponse(c, model.ErrMediaFileTooLarge)
+			middleware.MetricsErrorResponse(c, model.ErrMediaFileTooLarge)
 			return
 		}
 		if errors.Is(err, service.ErrFileEmpty) || errors.Is(err, service.ErrMIMERejected) {
-			model.ErrorResponse(c, model.ErrMediaInvalidFile)
+			middleware.MetricsErrorResponse(c, model.ErrMediaInvalidFile)
 			return
 		}
 		log.Error().Err(err).Msg("Media store failed")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 
-	log.Info().Str("name", fileName).Int64("size", fileSize).Str("token", pkg.SafePrefix(tokenStr, 10)).
+	log.Info().Str("name", fileName).Int64("size", fileSize).Str("token", tokenStr).
 		Msg("Media uploaded")
 	c.JSON(200, gin.H{
 		"code":        0,

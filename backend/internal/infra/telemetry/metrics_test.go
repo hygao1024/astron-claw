@@ -17,9 +17,6 @@ func TestEnsureInstruments(t *testing.T) {
 	if ChatStreamDuration == nil {
 		t.Error("ChatStreamDuration is nil")
 	}
-	if ChatActiveStreams == nil {
-		t.Error("ChatActiveStreams is nil")
-	}
 }
 
 func TestTokenPrefix(t *testing.T) {

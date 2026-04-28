@@ -13,7 +13,7 @@ func TestValidateTokenDoesNotDependOnRedisRateLimit(t *testing.T) {
 	app := &App{
 		Config: &config.AppConfig{},
 	}
-	engine := SetupRouter(app)
+	engine := SetupRouter(app, "test-pod")
 
 	for i := 0; i < 25; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/api/token/validate", bytes.NewBufferString("{"))

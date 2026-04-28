@@ -20,14 +20,18 @@ func InitRedis(cfg config.RedisConfig) (redis.UniversalClient, error) {
 
 	if cfg.IsCluster() {
 		rdb = redis.NewClusterClient(&redis.ClusterOptions{
-			Addrs:    cfg.Addrs,
-			Password: cfg.Password,
+			Addrs:        cfg.Addrs,
+			Password:     cfg.Password,
+			PoolSize:     cfg.PoolSize,
+			MinIdleConns: cfg.MinIdleConns,
 		})
 	} else {
 		rdb = redis.NewClient(&redis.Options{
-			Addr:     cfg.Addrs[0],
-			Password: cfg.Password,
-			DB:       cfg.DB,
+			Addr:         cfg.Addrs[0],
+			Password:     cfg.Password,
+			DB:           cfg.DB,
+			PoolSize:     cfg.PoolSize,
+			MinIdleConns: cfg.MinIdleConns,
 		})
 	}
 

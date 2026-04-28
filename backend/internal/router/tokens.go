@@ -4,17 +4,25 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
-	"astron-claw/backend/internal/pkg"
+	"astron-claw/backend/internal/middleware"
+	"astron-claw/backend/internal/model"
 )
 
 func (app *App) createToken(c *gin.Context) {
-	token, err := app.TokenMgr.Generate(c.Request.Context(), "", 0)
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		// Allow empty body
+	}
+
+	token, err := app.TokenMgr.Generate(c.Request.Context(), body.Name, 0)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to generate token")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
-	log.Info().Str("token", pkg.SafePrefix(token, 10)).Msg("Token created via public API")
+	log.Info().Str("token", token).Str("name", body.Name).Msg("Token created via public API")
 	c.JSON(200, gin.H{"code": 0, "token": token})
 }
 
@@ -23,7 +31,7 @@ func (app *App) validateToken(c *gin.Context) {
 		Token string `json:"token"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"code": 400, "error": "Invalid request"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInvalidReq)
 		return
 	}
 
@@ -33,8 +41,7 @@ func (app *App) validateToken(c *gin.Context) {
 		botConnected = app.Bridge.IsBotConnected(c.Request.Context(), body.Token)
 	}
 
-	tokenPrefix := pkg.SafePrefix(body.Token, 10)
-	log.Debug().Str("token", tokenPrefix).Bool("valid", valid).Msg("Token validate")
+	log.Debug().Str("token", body.Token).Bool("valid", valid).Msg("Token validate")
 
 	c.JSON(200, gin.H{
 		"code":          0,

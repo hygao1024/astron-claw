@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-
-	"astron-claw/backend/internal/pkg"
 )
 
 func (b *ConnectionBridge) startArtifactCleanupWorkers() {
@@ -41,7 +39,7 @@ func (b *ConnectionBridge) doArtifactCleanup(token string) {
 	defer cancel()
 
 	if err := b.queue.DeleteQueue(ctx, BotInboxPrefix+token); err != nil {
-		log.Warn().Err(err).Str("token", pkg.SafePrefix(token, 10)).Msg("Failed to delete legacy bot inbox")
+		log.Warn().Err(err).Str("token", token).Msg("Failed to delete legacy bot inbox")
 	}
 	b.cleanupChatInboxes(ctx, token)
 }

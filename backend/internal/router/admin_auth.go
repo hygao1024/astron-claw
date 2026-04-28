@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
 
+	"astron-claw/backend/internal/middleware"
 	"astron-claw/backend/internal/model"
 )
 
@@ -34,11 +35,11 @@ func (app *App) adminAuthSetup(c *gin.Context) {
 	isSet, err := app.AdminAuth.IsPasswordSet(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to check admin password status")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 	if isSet {
-		model.ErrorResponse(c, model.ErrAdminPasswordExists)
+		middleware.MetricsErrorResponse(c, model.ErrAdminPasswordExists)
 		return
 	}
 
@@ -46,24 +47,24 @@ func (app *App) adminAuthSetup(c *gin.Context) {
 		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"code": 400, "error": "Invalid request"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInvalidReq)
 		return
 	}
 	if len(body.Password) < 8 {
-		model.ErrorResponse(c, model.ErrAdminPasswordShort)
+		middleware.MetricsErrorResponse(c, model.ErrAdminPasswordShort)
 		return
 	}
 
 	if err := app.AdminAuth.SetPassword(ctx, body.Password); err != nil {
 		log.Error().Err(err).Msg("Failed to set admin password")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 
 	session, err := app.AdminAuth.CreateSession(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create admin session")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 
@@ -80,26 +81,26 @@ func (app *App) adminAuthLogin(c *gin.Context) {
 		Password string `json:"password"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"code": 400, "error": "Invalid request"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInvalidReq)
 		return
 	}
 
 	valid, err := app.AdminAuth.VerifyPassword(ctx, body.Password)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to verify admin password")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 	if !valid {
 		log.Warn().Msg("Admin login failed — wrong password")
-		model.ErrorResponse(c, model.ErrAuthWrongPassword)
+		middleware.MetricsErrorResponse(c, model.ErrAuthWrongPassword)
 		return
 	}
 
 	session, err := app.AdminAuth.CreateSession(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to create admin session after login")
-		c.JSON(500, gin.H{"code": 500, "error": "Internal server error"})
+		middleware.MetricsErrorResponse(c, model.ErrChatInternalError)
 		return
 	}
 

@@ -3,12 +3,14 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 
+	"astron-claw/backend/internal/model"
 	"astron-claw/backend/internal/service"
 )
 
@@ -35,8 +37,9 @@ func TokenAuth(tokenMgr *service.TokenManager, rdb redis.UniversalClient) gin.Ha
 		token := extractBearer(raw)
 
 		if token == "" || !validateCached(c.Request.Context(), token, tokenMgr, rdb) {
+			c.Set("metrics_code", strconv.Itoa(model.CodeAuthInvalidToken))
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code":  http.StatusUnauthorized,
+				"code":  model.CodeAuthInvalidToken,
 				"error": "Invalid or missing token",
 			})
 			return
